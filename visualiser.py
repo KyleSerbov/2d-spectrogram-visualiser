@@ -52,14 +52,14 @@ if SHOW_FPS_COUNTER:
 
 # --- CONSTANTS ---
 # Defined early so they are available for ModernGL setup
-CHUNK = 1024
-FPS = 144
+CHUNK = 2048
+FPS = 30
 min_freq = 20.0
 max_freq = 40000.0
 log_min_freq = np.log(min_freq)
 log_scale = np.log(max_freq / min_freq)
 amp_threshold = 0.01 # Match older working version
-fade_factor = 0.8  # Match older working version
+fade_factor = 0.5  # Match older working version
 
 # --- MODERNGL SETUP ---
 ctx = moderngl.create_context()
@@ -260,10 +260,14 @@ try:
 
                     # Prepare data for GPU
                     norm_freqs = np.log(final_freqs / min_freq) / log_scale
-                    
+
+                    # Clamp to keep dots fully on-screen (pan maps to NDC x, norm_freqs to NDC y)
+                    pan        = np.clip(pan,        -0.98,  0.98)
+                    norm_freqs = np.clip(norm_freqs,  0.01,  0.99)
+
                     # Normalize Amplitude and apply brightness multiplier
                     norm_amps = (final_amps / max_amp) * BRIGHTNESS_MULTIPLIER
-                    
+
                     gpu_data = np.column_stack((pan, norm_freqs, norm_amps)).astype('f4')
                     points_data = gpu_data.tobytes()
                     num_points = len(final_amps)
