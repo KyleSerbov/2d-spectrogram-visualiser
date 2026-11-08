@@ -53,6 +53,8 @@ if SHOW_FPS_COUNTER:
 # --- CONSTANTS ---
 # Defined early so they are available for ModernGL setup
 CHUNK = 2048
+OVERLAP = 4  # windows per CHUNK; overlapping so transients at chunk edges aren't windowed away
+HOP = CHUNK // OVERLAP
 FPS = 30
 min_freq = 20.0
 max_freq = 40000.0
@@ -200,6 +202,11 @@ stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True,
                 stream_callback=callback)
 stream.start_stream()
 
+bufL = np.zeros(CHUNK, dtype=np.float32)
+bufR = np.zeros(CHUNK, dtype=np.float32)
+hanning = np.hanning(CHUNK).astype(np.float32)
+freqs = np.fft.rfftfreq(CHUNK, 1.0 / RATE)
+
 running = True
 
 try:
@@ -218,22 +225,24 @@ try:
 
         frame_points = []
 
+        windows = []
         for data in chunks:
-            data = data.copy()
-
             if CHANNELS >= 2:
-                dataL = data[0::2]
-                dataR = data[1::2]
+                newL = data[0::CHANNELS]
+                newR = data[1::CHANNELS]
             else:
-                dataL = dataR = data
+                newL = newR = data
+            for start in range(0, len(newL), HOP):
+                stepL = newL[start:start + HOP]
+                stepR = newR[start:start + HOP]
+                n = len(stepL)
+                bufL = np.roll(bufL, -n); bufL[-n:] = stepL
+                bufR = np.roll(bufR, -n); bufR[-n:] = stepR
+                windows.append((bufL * hanning, bufR * hanning))
 
-            hanning = np.hanning(len(dataL))
-            dataL *= hanning
-            dataR *= hanning
-
+        for dataL, dataR in windows:
             fftL = np.abs(np.fft.rfft(dataL))
             fftR = np.abs(np.fft.rfft(dataR))
-            freqs = np.fft.rfftfreq(CHUNK, 1.0 / RATE)
 
             max_amp = np.max(np.concatenate((fftL, fftR))) + 1e-6
 
@@ -266,7 +275,7 @@ try:
                     norm_freqs = np.clip(norm_freqs,  0.01,  0.99)
 
                     # Normalize Amplitude and apply brightness multiplier
-                    norm_amps = (final_amps / max_amp) * BRIGHTNESS_MULTIPLIER
+                    norm_amps = (final_amps / max_amp) * BRIGHTNESS_MULTIPLIER / OVERLAP
 
                     frame_points.append(np.column_stack((pan, norm_freqs, norm_amps)).astype('f4'))
 
