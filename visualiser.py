@@ -189,11 +189,10 @@ else:
     CHANNELS = default_loopback['maxInputChannels']
     RATE = int(default_loopback['defaultSampleRate'])
 
-audio_queue = queue.Queue(maxsize=1)
+audio_queue = queue.Queue()
 
 def callback(in_data, frame_count, time_info, status):
-    if audio_queue.empty():
-        audio_queue.put(np.frombuffer(in_data, dtype=np.float32))
+    audio_queue.put(np.frombuffer(in_data, dtype=np.float32))
     return (None, pyaudio.paContinue)
 
 stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True,
@@ -210,15 +209,16 @@ try:
                (event.type == pygame.KEYDOWN and (event.key == pygame.K_ESCAPE or event.key == pygame.K_q)):
                 running = False
 
-        try:
-            data = audio_queue.get_nowait()
-        except queue.Empty:
-            data = None
+        chunks = []
+        while True:
+            try:
+                chunks.append(audio_queue.get_nowait())
+            except queue.Empty:
+                break
 
-        points_data = b'' # Bytes to send to GPU
-        num_points = 0
+        frame_points = []
 
-        if data is not None:
+        for data in chunks:
             data = data.copy()
 
             if CHANNELS >= 2:
@@ -268,9 +268,15 @@ try:
                     # Normalize Amplitude and apply brightness multiplier
                     norm_amps = (final_amps / max_amp) * BRIGHTNESS_MULTIPLIER
 
-                    gpu_data = np.column_stack((pan, norm_freqs, norm_amps)).astype('f4')
-                    points_data = gpu_data.tobytes()
-                    num_points = len(final_amps)
+                    frame_points.append(np.column_stack((pan, norm_freqs, norm_amps)).astype('f4'))
+
+        num_points = 0
+        if frame_points:
+            gpu_data = np.vstack(frame_points)
+            num_points = len(gpu_data)
+            points_data = gpu_data.tobytes()
+            if len(points_data) > vbo_points.size:
+                vbo_points.orphan(len(points_data))
 
         # --- RENDER PASS ---
         
