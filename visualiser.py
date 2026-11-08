@@ -1,21 +1,31 @@
+import warnings
+import sys
+import os
+
+# Suppress warnings immediately before other imports
+warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+
 import pygame
-import pygame.pixelcopy
 import pyaudiowpatch as pyaudio
 import numpy as np
 import queue
 import ctypes
-import warnings
+import moderngl
+import struct
 
-# Suppress the pkg_resources warning from Pygame
-warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
+# --- CONTROL VARIABLES ---
+SHOW_FPS_COUNTER = True
+# -------------------------
 
-# Initialize Pygame
+# Initialize Pygame with OpenGL
 pygame.init()
+pygame.font.init() # Ensure font module is ready
 info = pygame.display.Info()
 width, height = info.current_w, info.current_h
 
-# Window always on top
-screen = pygame.display.set_mode((width, height), pygame.NOFRAME) 
+# Window always on top + OpenGL context
+screen = pygame.display.set_mode((width, height), pygame.NOFRAME | pygame.OPENGL | pygame.DOUBLEBUF)
 
 hwnd = pygame.display.get_wm_info()['window']
 HWND_TOPMOST = -1
@@ -31,17 +41,89 @@ except Exception as e:
 
 clock = pygame.time.Clock()
 
-try:
-    font = pygame.font.Font(None, 36) 
-except pygame.error:
-    font = None
+# FPS Counter Setup
+if SHOW_FPS_COUNTER:
+    try:
+        # Use a reliable system font
+        font = pygame.font.SysFont('Consolas', 24, bold=True) 
+    except pygame.error:
+        font = None
 
-# Audio parameters
-CHUNK = 2048
+# --- CONSTANTS ---
+# Defined early so they are available for ModernGL setup
+CHUNK = 1024
+FPS = 144
+min_freq = 10.0
+max_freq = 40000.0
+log_min_freq = np.log(min_freq)
+log_scale = np.log(max_freq / min_freq)
+amp_threshold = 0.01 # Match older working version
+
+# --- MODERNGL SETUP ---
+ctx = moderngl.create_context()
+ctx.viewport = (0, 0, width, height)
+ctx.point_size = 5.0  # Fixed visible size for all points
+
+# Shaders for drawing the dots (with dynamic brightness)
+prog_points = ctx.program(
+    vertex_shader='''
+        #version 330
+        in vec2 in_vert; // (pan, freq_norm)
+        in float in_amp;
+        out float v_amp;
+        
+        void main() {
+            // Map inputs to NDC coordinates (-1 to 1)
+            float x = in_vert.x;
+            float y = (in_vert.y * 2.0) - 1.0;
+            
+            gl_Position = vec4(x, y, 0.0, 1.0);
+            v_amp = in_amp;
+        }
+    ''',
+    fragment_shader='''
+        #version 330
+        in float v_amp;
+        out vec4 f_color;
+        
+        void main() {
+            f_color = vec4(v_amp, v_amp, v_amp, 1.0);
+        }
+    ''',
+)
+
+# Shaders for text rendering
+prog_text = ctx.program(
+    vertex_shader='''
+        #version 330
+        in vec2 in_vert;
+        in vec2 in_uv;
+        out vec2 v_uv;
+        void main() {
+            v_uv = in_uv;
+            gl_Position = vec4(in_vert, 0.0, 1.0);
+        }
+    ''',
+    fragment_shader='''
+        #version 330
+        uniform sampler2D tex;
+        in vec2 v_uv;
+        out vec4 f_color;
+        void main() {
+            f_color = texture(tex, v_uv);
+        }
+    ''',
+)
+prog_text['tex'].value = 0
+
+# Buffer for point data (Dynamic)
+vbo_points = ctx.buffer(reserve=CHUNK * 3 * 4) # 3 floats * 4 bytes
+vao_points = ctx.vertex_array(prog_points, [(vbo_points, '2f 1f', 'in_vert', 'in_amp')])
+
+# --- AUDIO SETUP ---
 FORMAT = pyaudio.paFloat32
 p = pyaudio.PyAudio()
 
-# Loopback device setup
 default_loopback = p.get_default_wasapi_loopback()
 if default_loopback is None:
     print("No loopback device found. Using default input.")
@@ -58,7 +140,6 @@ audio_queue = queue.Queue(maxsize=1)
 
 def callback(in_data, frame_count, time_info, status):
     if audio_queue.empty():
-        # This creates a read-only numpy array from the raw bytes
         audio_queue.put(np.frombuffer(in_data, dtype=np.float32))
     return (None, pyaudio.paContinue)
 
@@ -67,33 +148,7 @@ stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True,
                 stream_callback=callback)
 stream.start_stream()
 
-# Ghosting parameters
-FPS = 144
-fade_factor = 0.8
-intensity = np.zeros((height, width), dtype=np.float64)
-
-min_freq = 10.0
-max_freq = 40000.0
-
-# Pre-calculate Numpy Kernel
-spot_radius = 5
-ky, kx = np.ogrid[-spot_radius:spot_radius+1, -spot_radius:spot_radius+1]
-mask = kx**2 + ky**2 <= spot_radius**2
-kernel_offsets_y, kernel_offsets_x = np.where(mask)
-kernel_offsets_y -= spot_radius
-kernel_offsets_x -= spot_radius
-
-log_min_freq = np.log(min_freq)
-log_scale = np.log(max_freq / min_freq)
-
-amp_threshold = 0.01
-
 running = True
-
-display_surface = pygame.Surface((width, height))
-
-# Buffer to store RGB data before copying to surface
-rgb_buffer = np.empty((width, height, 3), dtype=np.uint8)
 
 try:
     while running:
@@ -102,15 +157,15 @@ try:
                (event.type == pygame.KEYDOWN and (event.key == pygame.K_ESCAPE or event.key == pygame.K_q)):
                 running = False
 
-        intensity *= fade_factor
-
         try:
             data = audio_queue.get_nowait()
         except queue.Empty:
             data = None
 
+        points_data = b'' # Bytes to send to GPU
+        num_points = 0
+
         if data is not None:
-            # FIX: Create a writable copy of the read-only buffer
             data = data.copy()
 
             if CHANNELS >= 2:
@@ -119,7 +174,6 @@ try:
             else:
                 dataL = dataR = data
 
-            # Now this in-place multiplication works because data is writable
             hanning = np.hanning(len(dataL))
             dataL *= hanning
             dataR *= hanning
@@ -131,6 +185,7 @@ try:
             max_amp = np.max(np.concatenate((fftL, fftR))) + 1e-6
 
             valid_indices = np.where(freqs[1:] > min_freq)[0] + 1
+            
             if len(valid_indices) > 0:
                 v_freqs = freqs[valid_indices]
                 v_fftL = fftL[valid_indices]
@@ -149,54 +204,82 @@ try:
                         pan = (final_fftR - final_fftL) / (final_fftR + final_fftL + 1e-6)
                     else:
                         pan = np.zeros_like(final_amps)
-                        
-                    xs = ((pan + 1.0) / 2.0 * (width - 1)).astype(int)
-                    
-                    logf = np.log(final_freqs / min_freq) / log_scale
-                    ys = (height - 1 - (logf * (height - 1))).astype(int)
-                    
-                    add_amps = (final_amps / max_amp) * 255.0
 
-                    target_ys = ys[:, np.newaxis] + kernel_offsets_y
-                    target_xs = xs[:, np.newaxis] + kernel_offsets_x
+                    # Prepare data for GPU
+                    norm_freqs = np.log(final_freqs / min_freq) / log_scale
                     
-                    flat_ys = target_ys.ravel()
-                    flat_xs = target_xs.ravel()
-                    flat_amps = np.repeat(add_amps, len(kernel_offsets_y))
-
-                    valid_pixels = (flat_ys >= 0) & (flat_ys < height) & \
-                                   (flat_xs >= 0) & (flat_xs < width)
+                    # Normalize Amplitude
+                    norm_amps = final_amps / max_amp
                     
-                    np.add.at(intensity, 
-                              (flat_ys[valid_pixels], flat_xs[valid_pixels]), 
-                              flat_amps[valid_pixels])
+                    gpu_data = np.column_stack((pan, norm_freqs, norm_amps)).astype('f4')
+                    points_data = gpu_data.tobytes()
+                    num_points = len(final_amps)
 
-        intensity = np.clip(intensity, 0, 255)
+        # --- RENDER PASS (simplified: direct to screen, no fade/FBO/blend) ---
+        
+        ctx.screen.use()
+        ctx.clear(0.0, 0.0, 0.0, 1.0)
+        ctx.disable(moderngl.BLEND)
+        
+        if num_points > 0:
+            vbo_points.write(points_data)
+            vao_points.render(moderngl.POINTS, vertices=num_points)
 
-        intensity_uint8 = intensity.T.astype(np.uint8)
-        
-        rgb_buffer[:, :, 0] = intensity_uint8
-        rgb_buffer[:, :, 1] = intensity_uint8
-        rgb_buffer[:, :, 2] = intensity_uint8
-        
-        pygame.pixelcopy.array_to_surface(display_surface, rgb_buffer)
-        
-        screen.blit(display_surface, (0, 0))
-        
-        #if font:
-        #    fps = clock.get_fps()
-        #    fps_text = font.render(f"FPS: {int(fps)}", True, (255, 255, 255))
-        #    screen.blit(fps_text, (10, 10))
+        # Render FPS counter if enabled
+        if SHOW_FPS_COUNTER and font:
+            fps = clock.get_fps()
+            fps_text = font.render(f"FPS: {int(fps)}", True, (255, 255, 255))
+            tw, th = fps_text.get_size()
+
+            left = -1.0 + (20.0 / width)
+            right = left + (2.0 * tw / width)
+            top = 1.0 - (20.0 / height)
+            bottom = top - (2.0 * th / height)
+
+            vert_data = np.array([
+                left, bottom, 0.0, 1.0,  # Flip UV y because pygame tostring is top-down, but GL bottom-up
+                right, bottom, 1.0, 1.0,
+                left, top, 0.0, 0.0,
+                right, top, 1.0, 0.0,
+            ], dtype='f4')
+
+            text_data = pygame.image.tostring(fps_text, 'RGBA', False)
+
+            if 'text_tex' not in globals() or text_tex.size != (tw, th):
+                if 'text_tex' in globals():
+                    text_tex.release()
+                text_tex = ctx.texture((tw, th), 4, text_data)
+                text_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+
+                if 'text_vbo' in globals():
+                    text_vbo.release()
+                text_vbo = ctx.buffer(vert_data.tobytes())
+                if 'text_vao' in globals():
+                    text_vao.release()
+                text_vao = ctx.vertex_array(prog_text, [(text_vbo, '2f 2f', 'in_vert', 'in_uv')])
+            else:
+                text_tex.write(text_data)
+                text_vbo.write(vert_data.tobytes())
+
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            text_tex.use(0)
+            text_vao.render(moderngl.TRIANGLE_STRIP)
+            ctx.disable(moderngl.BLEND)
 
         pygame.display.flip()
         clock.tick(FPS)
 
 except Exception as e:
     print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
 
 finally:
-    if stream.is_active():
+    if 'stream' in locals() and stream.is_active():
         stream.stop_stream()
-    stream.close()
-    p.terminate()
+    if 'stream' in locals():
+        stream.close()
+    if 'p' in locals():
+        p.terminate()
     pygame.quit()
