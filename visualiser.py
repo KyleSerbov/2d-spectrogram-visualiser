@@ -15,7 +15,8 @@ import moderngl
 import struct
 
 # --- CONTROL VARIABLES ---
-SHOW_FPS_COUNTER = True
+SHOW_FPS_COUNTER = False
+BRIGHTNESS_MULTIPLIER = 8.0  # Increase this value to make the pixels brighter (e.g., 2.0 for double brightness)
 # -------------------------
 
 # Initialize Pygame with OpenGL
@@ -53,15 +54,17 @@ if SHOW_FPS_COUNTER:
 # Defined early so they are available for ModernGL setup
 CHUNK = 1024
 FPS = 144
-min_freq = 10.0
+min_freq = 20.0
 max_freq = 40000.0
 log_min_freq = np.log(min_freq)
 log_scale = np.log(max_freq / min_freq)
 amp_threshold = 0.01 # Match older working version
+fade_factor = 0.8  # Match older working version
 
 # --- MODERNGL SETUP ---
 ctx = moderngl.create_context()
 ctx.viewport = (0, 0, width, height)
+ctx.enable(moderngl.BLEND)
 ctx.point_size = 5.0  # Fixed visible size for all points
 
 # Shaders for drawing the dots (with dynamic brightness)
@@ -92,6 +95,31 @@ prog_points = ctx.program(
     ''',
 )
 
+# Shaders for the fade effect (Texture to Screen)
+prog_fade = ctx.program(
+    vertex_shader='''
+        #version 330
+        in vec2 in_vert;
+        out vec2 v_uv;
+        void main() {
+            v_uv = in_vert * 0.5 + 0.5;
+            gl_Position = vec4(in_vert, 0.0, 1.0);
+        }
+    ''',
+    fragment_shader='''
+        #version 330
+        uniform sampler2D tex;
+        uniform float fade;
+        in vec2 v_uv;
+        out vec4 f_color;
+        void main() {
+            vec4 color = texture(tex, v_uv);
+            f_color = vec4(color.rgb * fade, 1.0);
+        }
+    ''',
+)
+prog_fade['tex'].value = 0
+
 # Shaders for text rendering
 prog_text = ctx.program(
     vertex_shader='''
@@ -115,6 +143,31 @@ prog_text = ctx.program(
     ''',
 )
 prog_text['tex'].value = 0
+
+# Full screen quad for fading
+quad_buffer = ctx.buffer(np.array([
+    -1.0, -1.0,
+     1.0, -1.0,
+    -1.0,  1.0,
+     1.0,  1.0,
+], dtype='f4').tobytes())
+quad_vao = ctx.vertex_array(prog_fade, [(quad_buffer, '2f', 'in_vert')])
+
+# Textures for Ping-Pong buffering (History)
+tex1 = ctx.texture((width, height), 4, dtype='f4')
+tex2 = ctx.texture((width, height), 4, dtype='f4')
+fbo1 = ctx.framebuffer(color_attachments=[tex1])
+fbo2 = ctx.framebuffer(color_attachments=[tex2])
+
+# Initialize FBOS to BLACK
+fbo1.use()
+ctx.clear(0.0, 0.0, 0.0, 1.0)
+fbo2.use()
+ctx.clear(0.0, 0.0, 0.0, 1.0)
+
+# State for ping-pong
+active_tex = tex1
+active_fbo = fbo2 # We draw FROM tex1 INTO fbo2
 
 # Buffer for point data (Dynamic)
 vbo_points = ctx.buffer(reserve=CHUNK * 3 * 4) # 3 floats * 4 bytes
@@ -208,24 +261,46 @@ try:
                     # Prepare data for GPU
                     norm_freqs = np.log(final_freqs / min_freq) / log_scale
                     
-                    # Normalize Amplitude
-                    norm_amps = final_amps / max_amp
+                    # Normalize Amplitude and apply brightness multiplier
+                    norm_amps = (final_amps / max_amp) * BRIGHTNESS_MULTIPLIER
                     
                     gpu_data = np.column_stack((pan, norm_freqs, norm_amps)).astype('f4')
                     points_data = gpu_data.tobytes()
                     num_points = len(final_amps)
 
-        # --- RENDER PASS (simplified: direct to screen, no fade/FBO/blend) ---
+        # --- RENDER PASS ---
         
-        ctx.screen.use()
-        ctx.clear(0.0, 0.0, 0.0, 1.0)
-        ctx.disable(moderngl.BLEND)
+        # 1. Bind the target framebuffer (The "Next" frame)
+        active_fbo.use()
         
+        # 2. Draw the PREVIOUS frame into the CURRENT frame with fade
+        ctx.disable(moderngl.BLEND) 
+        active_tex.use(location=0) # Bind previous texture
+        prog_fade['fade'].value = fade_factor
+        quad_vao.render(moderngl.TRIANGLE_STRIP)
+        
+        # 3. Draw the NEW points on top with additive blending
         if num_points > 0:
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = (moderngl.ONE, moderngl.ONE)
             vbo_points.write(points_data)
             vao_points.render(moderngl.POINTS, vertices=num_points)
 
-        # Render FPS counter if enabled
+        # 4. Display to Screen
+        ctx.screen.use()
+        ctx.clear(0.0, 0.0, 0.0, 1.0)
+        ctx.disable(moderngl.BLEND) 
+        
+        # Display the FBO we just drew into
+        if active_fbo == fbo1:
+            tex1.use(location=0)
+        else:
+            tex2.use(location=0)
+            
+        prog_fade['fade'].value = 1.0
+        quad_vao.render(moderngl.TRIANGLE_STRIP)
+
+        # 5. Render FPS counter if enabled
         if SHOW_FPS_COUNTER and font:
             fps = clock.get_fps()
             fps_text = font.render(f"FPS: {int(fps)}", True, (255, 255, 255))
@@ -266,6 +341,14 @@ try:
             text_tex.use(0)
             text_vao.render(moderngl.TRIANGLE_STRIP)
             ctx.disable(moderngl.BLEND)
+
+        # 6. Swap Buffers for next frame
+        if active_fbo == fbo1:
+            active_fbo = fbo2
+            active_tex = tex1
+        else:
+            active_fbo = fbo1
+            active_tex = tex2
 
         pygame.display.flip()
         clock.tick(FPS)
