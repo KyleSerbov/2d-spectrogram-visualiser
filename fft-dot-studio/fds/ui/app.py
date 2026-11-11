@@ -1057,11 +1057,14 @@ class StudioApp:
             ex['codec'] = CODECS[i]
             self.touch()
         tip('auto = NVENC if the driver supports it, otherwise libx264.')
-        alabels = ['AAC 320k', 'FLAC (lossless)', 'PCM 24-bit (lossless, .mov/.mkv)']
-        ch, i = imgui.combo('Audio', AUDIO_CODECS.index(ex['audio']), alabels)
+        alabels = ['Copy original (bit-exact, same size)', 'AAC 320k', 'FLAC (lossless)',
+                   'PCM 24-bit (lossless, .mov/.mkv)']
+        ch, i = imgui.combo('Audio', AUDIO_CODECS.index(ex['audio']) if ex['audio'] in AUDIO_CODECS else 0, alabels)
         if ch:
             ex['audio'] = AUDIO_CODECS[i]
             self.touch()
+        tip("Copy original puts the source file's audio stream into the video untouched: no quality loss and no\n"
+            'size increase. Needs a single track; otherwise lossless sources become FLAC and lossy ones AAC.')
         ch, v = imgui.slider_int('Quality (CRF/CQ)', int(ex['quality']), 10, 35)
         if ch:
             ex['quality'] = v
@@ -1102,7 +1105,9 @@ class StudioApp:
         if opened:
             imgui.text(os.path.basename(ex.path))
             imgui.text_disabled(f'{ex.w}x{ex.h} @ {ex.fps} fps, {ex.n_frames} frames, '
-                                f'{getattr(ex, "codec_used", "?")} + {ex.audio}')
+                                f'{getattr(ex, "codec_used", "?")} + {getattr(ex, "audio_used", ex.audio)}')
+            if getattr(ex, 'audio_note', ''):
+                imgui.text_disabled('Audio: ' + ex.audio_note)
             eta = ex.eta()
             imgui.progress_bar(ex.progress, V2(-1, 0), f'{ex.k} / {ex.n_frames}' + (f'   ETA {eta:.0f}s' if eta else ''))
             if ex.done or ex.error or ex.cancelled:

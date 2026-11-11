@@ -22,7 +22,12 @@ RESOLUTIONS = {'1280x720 (720p)': (1280, 720), '1920x1080 (1080p)': (1920, 1080)
                '1080x1920 (vertical)': (1080, 1920)}
 FPS_CHOICES = [24, 25, 30, 50, 60]
 CODECS = ['auto', 'h264_nvenc', 'hevc_nvenc', 'libx264', 'libx265']
-AUDIO_CODECS = ['aac', 'flac', 'pcm']
+AUDIO_CODECS = ['copy', 'aac', 'flac', 'pcm']
+_LOSSLESS = {'flac', 'alac', 'wavpack', 'tta', 'ape', 'mlp', 'truehd'}
+# Codecs each container can carry untouched (stream copy).
+_COPYABLE = {'.mp4': {'aac', 'mp3', 'alac', 'flac', 'opus', 'ac3', 'eac3'},
+             '.mov': {'aac', 'mp3', 'alac', 'ac3', 'eac3'} | {f'pcm_{f}' for f in ('s16le', 's24le', 's32le', 'f32le')},
+             '.mkv': None, '.webm': {'opus', 'vorbis'}}
 _NOWIN = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
@@ -89,13 +94,44 @@ class Exporter:
             return ['-c:v', 'libx265', '-crf', q, '-preset', 'medium', '-pix_fmt', 'yuv420p', '-tag:v', 'hvc1'], codec
         return ['-c:v', 'libx264', '-crf', q, '-preset', 'medium', '-pix_fmt', 'yuv420p'], codec
 
+    def _source_audio_codec(self, path):
+        fp = ffprobe_path()
+        r = subprocess.run([fp, '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name',
+                            '-of', 'csv=p=0', path], capture_output=True, text=True, creationflags=_NOWIN)
+        return r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else None
+
+    def _resolve_audio(self):
+        """Decide the audio path. 'copy' passes the source stream through bit-for-bit when the timeline is a
+        single track starting at 0 and the container accepts the codec; otherwise lossless sources fall back
+        to FLAC and lossy ones to AAC. Returns the source path to copy from, or None to encode the mix."""
+        self.audio_used, self.audio_note = self.audio, ''
+        if self.audio != 'copy':
+            return None
+        paths = self.engine.project.tracks
+        ext = os.path.splitext(self.path)[1].lower()
+        src_codec = self._source_audio_codec(paths[0]) if len(paths) == 1 else None
+        allowed = _COPYABLE.get(ext, set())
+        if len(paths) == 1 and self.t_start == 0 and src_codec and (allowed is None or src_codec in allowed):
+            self.audio_used = 'copy'
+            self.audio_note = f'original {src_codec} stream copied untouched'
+            return paths[0]
+        codecs = [src_codec] if len(paths) == 1 else [self._source_audio_codec(p) for p in paths]
+        lossless = all(c in _LOSSLESS or (c or '').startswith('pcm_') for c in codecs)
+        self.audio_used = 'flac' if lossless else 'aac'
+        why = ('copy needs a single track' if len(paths) != 1 else
+               f'{src_codec or "this audio"} cannot be copied into {ext or "this file type"}')
+        self.audio_note = f'{why}; encoded as {self.audio_used.upper()}'
+        return None
+
     def _audio_args(self):
         ext = os.path.splitext(self.path)[1].lower()
-        if self.audio == 'pcm':
+        if self.audio_used == 'copy':
+            return ['-c:a', 'copy']
+        if self.audio_used == 'pcm':
             if ext not in ('.mov', '.mkv'):
                 raise RuntimeError('PCM audio needs a .mov or .mkv output file')
             return ['-c:a', 'pcm_s24le']
-        if self.audio == 'flac':
+        if self.audio_used == 'flac':
             return ['-c:a', 'flac', '-strict', '-2'] if ext == '.mp4' else ['-c:a', 'flac']
         return ['-c:a', 'aac', '-b:a', '320k']
 
@@ -105,11 +141,13 @@ class Exporter:
             raise RuntimeError('ffmpeg not found (install with: winget install Gyan.FFmpeg)')
         if self.n_frames <= 0:
             raise RuntimeError('Nothing to export (timeline is empty)')
-        self._write_audio()
+        copy_src = self._resolve_audio()
+        if copy_src is None:
+            self._write_audio()
         vargs, self.codec_used = self._video_args()
         cmd = [ff, '-y', '-v', 'error',
                '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{self.w}x{self.h}', '-framerate', str(self.fps), '-i', '-',
-               '-i', self.wav, '-map', '0:v:0', '-map', '1:a:0', *vargs, *self._audio_args(),
+               '-i', copy_src or self.wav, '-map', '0:v:0', '-map', '1:a:0', *vargs, *self._audio_args(),
                '-r', str(self.fps), '-t', f'{self.exact_duration:.6f}']
         if self.path.lower().endswith(('.mp4', '.mov')):
             cmd += ['-movflags', '+faststart']

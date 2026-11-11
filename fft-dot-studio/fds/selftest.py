@@ -334,6 +334,33 @@ def run(out_dir=None, quick=False, gui=True):
     check('album (2 tracks) exports whole timeline', pr['frames'] == ex.n_frames and abs(pr['adur'] - 24.0) < 0.05,
           f'{pr["frames"]} frames, audio {pr["adur"]:.3f}s')
 
+    ex = Exporter(eng_album, gl, os.path.join(out_dir, 'export_album_copy.mp4'), 320, 180, 30, 'auto', 'copy', 28)
+    ex.run_blocking()
+    check('copy audio falls back for an album', ex.audio_used == 'flac', ex.audio_note)
+
+    import subprocess
+    from .audio_io import find_ffmpeg
+
+    def packet_hashes(path):
+        r = subprocess.run([find_ffmpeg(), '-v', 'error', '-i', path, '-map', '0:a:0', '-c', 'copy', '-f', 'framemd5',
+                            '-'], capture_output=True, text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return [ln.rsplit(',', 1)[-1].strip() for ln in r.stdout.splitlines() if ln and not ln.startswith('#')]
+
+    m4a = os.path.join(out_dir, 'test_song.m4a')
+    proj3 = Project()
+    proj3.tracks = [m4a]
+    proj3.keyframes = [Keyframe(0.0, 'note_rainbow')]
+    eng3 = Engine(proj3, mgr)
+    outp = os.path.join(out_dir, 'export_copy.mp4')
+    ex = Exporter(eng3, gl, outp, 320, 180, 30, 'auto', 'copy', 28)
+    ex.run_blocking()
+    src_h, out_h = packet_hashes(m4a), packet_hashes(outp)
+    pr = probe(outp)
+    n = len(out_h)
+    check('copy audio is bit-identical to the source', ex.audio_used == 'copy' and n > 0 and out_h == src_h[:n]
+          and len(src_h) - n <= 2 and pr['frames'] == ex.n_frames,
+          f'{ex.audio_note}; {n}/{len(src_h)} packets identical, {pr["frames"]} frames, audio {pr["adur"]:.3f}s')
+
     if gui:
         section('Editor UI (headless ImGui null backends, scripted input)')
         try:

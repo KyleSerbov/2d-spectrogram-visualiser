@@ -187,7 +187,7 @@ class Project:
         self.gap_s = 0.0
         self.use_demucs = True
         self.vocal_source = 'auto'
-        self.export = {'fps': 30, 'width': 1920, 'height': 1080, 'codec': 'auto', 'audio': 'aac',
+        self.export = {'fps': 30, 'width': 1920, 'height': 1080, 'codec': 'auto', 'audio': 'copy',
                        'quality': 18, 'path': ''}
         self.revision = 0
 
