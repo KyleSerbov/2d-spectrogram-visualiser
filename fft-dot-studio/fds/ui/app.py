@@ -335,8 +335,10 @@ class StudioApp:
         if not path:
             self.open_dialog('export_path')
             return
-        if self.manager.busy():
-            self.log('Wait for analysis to finish before exporting.')
+        blockers = self.engine.export_blockers()
+        if blockers:
+            self.export_msg = 'Waiting for analysis the colour modes need: ' + '; '.join(blockers)
+            self.log(self.export_msg)
             return
         self.player.stop()
         try:

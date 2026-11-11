@@ -289,6 +289,29 @@ def run(out_dir=None, quick=False, gui=True):
     r = p2.render_at(5.0)
     check('render overrides tween', 8.0 < r['brightness'] < 20.0, f'brightness at t=5: {r["brightness"]:.2f}')
 
+    section('Export only waits for the analyses the colour modes use')
+    ta0 = eng.tracks()[0]
+    saved = (proj.keyframes, ta0.feats, ta0.status)
+    try:
+        ta0.feats, ta0.status = None, 'features'
+        cases = [([Keyframe(0.0, 'mono')], False), ([Keyframe(0.0, 'radial')], False),
+                 ([Keyframe(0.0, 'onset_flash')], True), ([Keyframe(0.0, 'vowel')], True)]
+        pulse = Keyframe(0.0, 'radial')
+        pulse.set_param('pulse', 0.5)
+        cases.append(([pulse], True))
+        results = []
+        for kfs, should_block in cases:
+            proj.keyframes = kfs
+            b = eng.export_blockers()
+            results.append((kfs[0].mode, bool(b) == should_block, b))
+        check('mono / radial export while features + vowels are still running',
+              all(ok for _m, ok, _b in results), '; '.join(f'{m}: {"blocked" if b else "free"}' for m, _ok, b in results))
+        proj.keyframes = [Keyframe(0.0, 'mono')]
+        dots = eng.gather(5.0, 16 / 9)
+        check('rendering works without features', len(dots['x']) > 0, f'{len(dots["x"])} dots')
+    finally:
+        proj.keyframes, ta0.feats, ta0.status = saved
+
     section('Export (offline, frame exact, ffprobe)')
     from .audio_io import find_ffmpeg
     from .export import nvenc_works

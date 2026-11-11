@@ -205,6 +205,21 @@ class Engine:
     def offsets(self):
         return self.project.track_offsets(self.durations())
 
+    def export_blockers(self):
+        """Analyses the timeline's colour modes still need, as 'track: stage' strings (empty = can export)."""
+        need = self.project.required_analyses()
+        out = []
+        for ta in self.tracks():
+            if ta.status == 'error':
+                out.append(f'{ta.name}: analysis failed ({ta.error})')
+            elif ta.audio is None or ta.spectrum is None or ta.status in ('queued', 'decoding', 'spectrum'):
+                out.append(f'{ta.name}: spectrum')
+            elif 'feats' in need and ta.feats is None:
+                out.append(f'{ta.name}: beat/onset features')
+            elif need & {'stems', 'vowel'} and ta.status != 'ready':
+                out.append(f'{ta.name}: ' + ' + '.join(sorted(need & {'stems', 'vowel'})))
+        return out
+
     def total_duration(self):
         return self.offsets()[1]
 

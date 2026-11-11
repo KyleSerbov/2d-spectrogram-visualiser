@@ -46,6 +46,12 @@ class Mode:
         self.key, self.name, self.category, self.desc = key, name, category, desc
         self.params, self.fn = params, fn
         self.palette, self.native, self.needs = palette, native, set(needs)
+        self.needs_when = {}
+
+    def needs_for(self, params):
+        """Analyses this mode reads with these params: 'feats' (beats/onsets/chroma), 'stems', 'vowel'."""
+        p = self.fill(params)
+        return self.needs | {k for k, cond in self.needs_when.items() if cond(p)}
 
     def defaults(self):
         return {p.key: (list(p.default) if isinstance(p.default, list) else p.default) for p in self.params}
@@ -856,3 +862,10 @@ def interpolate_params(mode_obj, a, b, u):
         else:
             out[prm.key] = va if u < 0.5 else vb
     return out
+
+
+for _k in ('harmonic', 'onset_flash', 'timbre', 'key_colour', 'consonance', 'flow_field', 'beat_pulse'):
+    MODES[_k].needs.add('feats')
+MODES['radial'].needs_when['feats'] = lambda p: p['pulse'] > 0
+MODES['polar'].needs_when['feats'] = lambda p: bool(p['per_beat'])
+MODES['time_cycle'].needs_when['feats'] = lambda p: bool(p['per_beat'])

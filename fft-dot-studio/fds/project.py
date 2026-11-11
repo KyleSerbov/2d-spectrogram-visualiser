@@ -196,6 +196,12 @@ class Project:
         self.keyframes.sort(key=lambda k: k.time)
         return self.keyframes
 
+    def required_analyses(self):
+        need = set()
+        for k in self.keyframes:
+            need |= MODES[k.mode].needs_for(k.params)
+        return need
+
     def key_by_id(self, kid):
         for k in self.keyframes:
             if k.id == kid:
