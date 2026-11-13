@@ -177,6 +177,53 @@ class FrameCtx:
         return np.asarray(w, np.float64), float(v['voiced'][i]), float(v['openness'][i])
 
 
+MAX_INSERTED = 60000
+
+
+def between_dots(x, y, freq, inten, rgb, render, aspect):
+    """Dots placed on screen between drawn dots (on the straight, usually diagonal, line between them).
+
+    Pairs come from frequency order ('order'), from each dot's nearest on-screen neighbours ('nearest') or
+    both. Returns None or a dict: a, b (indices of the two parent dots in the frame's draw order), t
+    (position along a -> b), and x, y, inten, rgb of the inserted dots."""
+    mode = render.get('insert_mode', 'off')
+    n = int(round(render.get('insert_count', 1)))
+    vis = np.flatnonzero(inten > 0)
+    if mode == 'off' or n < 1 or len(vis) < 2:
+        return None
+    px = x[vis].astype(np.float64) * (aspect / 2)     # isotropic screen units, screen height = 1
+    py = y[vis].astype(np.float64)
+    pairs = []
+    if mode in ('order', 'both'):
+        o = np.argsort(freq[vis], kind='stable')
+        pairs.append(np.stack([o[:-1], o[1:]], 1))
+    if mode in ('nearest', 'both'):
+        from scipy.spatial import cKDTree
+        kk = int(min(max(1, round(render.get('insert_neighbours', 3))), len(vis) - 1))
+        pts = np.stack([px, py], 1)
+        _d, nb = cKDTree(pts).query(pts, k=kk + 1)
+        i = np.repeat(np.arange(len(vis)), kk)
+        j = nb[:, 1:].ravel()
+        pairs.append(np.stack([np.minimum(i, j), np.maximum(i, j)], 1))
+    P = np.unique(np.concatenate(pairs), axis=0)
+    d = np.hypot(px[P[:, 0]] - px[P[:, 1]], py[P[:, 0]] - py[P[:, 1]])
+    P = P[(d > 1e-6) & (d <= render.get('insert_max_dist', 0.06))]
+    if len(P) == 0:
+        return None
+    if len(P) * n > MAX_INSERTED:                        # keep the gaps between the brightest dots
+        w = np.minimum(inten[vis[P[:, 0]]], inten[vis[P[:, 1]]])
+        P = P[np.argsort(-w, kind='stable')[:MAX_INSERTED // n]]
+    a = np.repeat(vis[P[:, 0]], n)
+    b = np.repeat(vis[P[:, 1]], n)
+    t = np.tile(np.arange(1, n + 1) / (n + 1), len(P)).astype(np.float32)
+
+    def lerp(arr):
+        tt = t if arr.ndim == 1 else t[:, None]
+        return (arr[a] + (arr[b] - arr[a]) * tt).astype(np.float32)
+    return {'a': a, 'b': b, 't': t, 'x': lerp(x), 'y': lerp(y),
+            'inten': lerp(inten) * np.float32(render.get('insert_brightness', 1.0)), 'rgb': lerp(rgb)}
+
+
 class Layer:
     def __init__(self, mode, params, pal, use_palette, name):
         self.mode, self.params, self.pal, self.use_palette, self.name = mode, params, pal, use_palette, name
@@ -369,7 +416,7 @@ class Engine:
         ctx = self.ctx(ti, f, render, aspect)
         if ctx.n == 0:
             z = np.zeros(0, np.float32)
-            return ctx, render, z, z, np.zeros((0, 3), np.float32), []
+            return ctx, render, z, z, np.zeros((0, 3), np.float32), [], None
         layers, _ = self.layers_at(t)
         rgb, gain, overlay = self.colourise(ctx, layers)
         inten = (np.power(np.clip(ctx.level, 0, None), render['gamma']) * render['brightness'] * gain).astype(np.float32)
@@ -377,13 +424,15 @@ class Engine:
         if render['max_dots'] and keep.sum() > render['max_dots']:
             thr = np.partition(inten[keep], -int(render['max_dots']))[-int(render['max_dots'])]
             keep &= inten >= thr
-        return ctx, render, np.where(keep, inten, 0.0).astype(np.float32), gain, rgb, overlay
+        inten = np.where(keep, inten, 0.0).astype(np.float32)
+        ins = between_dots(ctx.x, ctx.y, ctx.freq, inten, rgb, render, aspect)
+        return ctx, render, inten, gain, rgb, overlay, ins
 
     def frame_grid(self, ti, f, aspect=None):
         """One frame's dots in draw order (one per spectrum bin, so index = exact frequency):
-        (ctx, render, intensity with 0 = not drawn, colour-mode gain, rgb)."""
-        ctx, render, inten, gain, rgb, _ov = self._frame_eval(ti, f, aspect or self.aspect)
-        return ctx, render, inten, gain, rgb
+        (ctx, render, intensity with 0 = not drawn, colour-mode gain, rgb, inserted dots or None)."""
+        ctx, render, inten, gain, rgb, _ov, ins = self._frame_eval(ti, f, aspect or self.aspect)
+        return ctx, render, inten, gain, rgb, ins
 
     def frame_dots(self, ti, f, aspect=None):
         aspect = aspect or self.aspect
@@ -393,9 +442,14 @@ class Engine:
         hit = self._dots.get_(key)
         if hit is not None:
             return hit
-        ctx, render, inten, gain, rgb, overlay = self._frame_eval(ti, f, aspect)
+        ctx, render, inten, gain, rgb, overlay, ins = self._frame_eval(ti, f, aspect)
         keep = inten > 0
-        out = (ctx.x[keep], ctx.y[keep], inten[keep], np.ascontiguousarray(rgb[keep], dtype=np.float32), overlay)
+        if ins is None:
+            out = (ctx.x[keep], ctx.y[keep], inten[keep], np.ascontiguousarray(rgb[keep], dtype=np.float32), overlay)
+        else:
+            out = (np.concatenate([ctx.x[keep], ins['x']]), np.concatenate([ctx.y[keep], ins['y']]),
+                   np.concatenate([inten[keep], ins['inten']]),
+                   np.ascontiguousarray(np.concatenate([rgb[keep], ins['rgb']]), dtype=np.float32), overlay)
         self._dots.put(key, out)
         return out
 

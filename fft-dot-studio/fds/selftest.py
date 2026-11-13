@@ -385,6 +385,13 @@ def run(out_dir=None, quick=False, gui=True):
           and len(src_h) - n <= 2 and pr['frames'] == ex.n_frames,
           f'{ex.audio_note}; {n}/{len(src_h)} packets identical, {pr["frames"]} frames, audio {pr["adur"]:.3f}s')
 
+    section('Insert between dots')
+    try:
+        _insert_tests(out_dir, mgr, wav, gl)
+    except Exception as e:
+        traceback.print_exc()
+        check('insert between dots', False, str(e))
+
     section('Dots -> sound')
     try:
         _sonify_tests(out_dir, sf, A, mgr, wav, gl)
@@ -456,6 +463,62 @@ def _click_test(out_dir, sf, A):
             name = {'centred': 'Centred, offset 0', 'live': 'Live-style',
                     'custom': f'Custom {off:+.0f} ms'}[mode]
             check(f'click alignment [{preset}] {name}', ok, '; '.join(res))
+
+
+def _insert_tests(out_dir, mgr, wav, gl):
+    """Inserted dots lie on the line between their parents, respect the max distance, switch per keyframe,
+    and both sound decoders play them."""
+    from .engine import Engine
+    from .project import Keyframe, Project
+    from .renderer import Renderer
+    from .sonify import Sonifier
+    proj = Project()
+    proj.tracks = [wav]
+    proj.keyframes = [Keyframe(0.0, 'note_rainbow')]
+    eng = Engine(proj, mgr)
+    f = 300
+    base = eng.frame_grid(0, f)
+    nvis = int((base[2] > 0).sum())
+    ren = Renderer(gl, 640, 360)
+    tiles = []
+    for mode in ('off', 'order', 'nearest', 'both'):
+        proj.render.update(insert_mode=mode, insert_count=3, insert_max_dist=0.15, insert_neighbours=3)
+        proj.revision += 1
+        ctx, render, inten, gain, rgb, ins = eng.frame_grid(0, f)
+        if mode == 'off':
+            check('insert off adds nothing', ins is None)
+        else:
+            a, b, t = ins['a'], ins['b'], ins['t']
+            px, py = ctx.x[a] + (ctx.x[b] - ctx.x[a]) * t, ctx.y[a] + (ctx.y[b] - ctx.y[a]) * t
+            on_line = np.allclose(ins['x'], px, atol=1e-5) and np.allclose(ins['y'], py, atol=1e-5)
+            d = np.hypot((ctx.x[a] - ctx.x[b]) * (eng.aspect / 2), ctx.y[a] - ctx.y[b])
+            diag = np.mean((np.abs(ctx.x[a] - ctx.x[b]) > 1e-4) & (np.abs(ctx.y[a] - ctx.y[b]) > 1e-4))
+            check(f'insert {mode}: dots on the line between their parents', on_line and d.max() <= 0.15 + 1e-6
+                  and (inten[a] > 0).all() and (inten[b] > 0).all(),
+                  f'{len(t)} inserted between {nvis} dots, {diag * 100:.0f}% of gaps diagonal')
+        x, y, i, c, _ = eng.frame_dots(0, f)
+        ren.render(eng.gather(f * 512 / 44100 + 1e-4))
+        tiles.append(ren.read_rgb())
+    from PIL import Image
+    Image.fromarray(np.concatenate([np.concatenate(tiles[:2], 1), np.concatenate(tiles[2:], 1)], 0)).save(
+        os.path.join(out_dir, 'insert_modes.png'))
+    # per keyframe: off until 6 s, nearest after
+    proj.render.update(insert_mode='off')
+    proj.keyframes = [Keyframe(0.0, 'note_rainbow'), Keyframe(6.0, 'note_rainbow')]
+    proj.keyframes[1].render_overrides = {'insert_mode': 'nearest', 'insert_count': 2}
+    proj.revision += 1
+    n_before = len(eng.gather(3.0)['x'])
+    n_after = len(eng.gather(8.0)['x'])
+    r_mid = proj.render_at(5.0)
+    check('insert mode switches per keyframe', n_after > n_before * 1.5 and r_mid['insert_mode'] == 'off',
+          f'{n_before} dots at 3 s, {n_after} at 8 s')
+    for src in ('exact', 'screen'):
+        so = Sonifier(eng, {'source': src}).start().wait()
+        y = so.out[0].astype(np.float64) / 32767
+        r1 = np.sqrt((y[int(1 * 44100):int(5 * 44100)] ** 2).mean())
+        r2 = np.sqrt((y[int(7 * 44100):int(11 * 44100)] ** 2).mean())
+        check(f'dots -> sound plays inserted dots ({src})', so.done and so.error is None and r1 > 0 and r2 > 0,
+              f'level {20 * np.log10(r2 / r1):+.1f} dB with inserts vs without')
 
 
 def _sonify_tests(out_dir, sf, A, mgr, wav, gl):

@@ -30,14 +30,20 @@ RENDER_DEFAULTS = {
     # geometry
     'pan_mode': 'level', 'pan_spread': 1.0, 'flip_x': False, 'flip_y': False, 'mirror_x': False, 'mirror_y': False,
     'edge_margin': 0.02,
+    # extra dots placed on screen between existing dots
+    'insert_mode': 'off', 'insert_count': 1, 'insert_neighbours': 3, 'insert_max_dist': 0.06,
+    'insert_brightness': 1.0,
 }
+INSERT_MODES = ['off', 'order', 'nearest', 'both']
 RENDER_CHOICES = {
     'freq_scale': ['log', 'mel', 'linear'], 'amp_scale': ['linear', 'db'],
     'normalise': ['frame', 'running', 'global'], 'dot_shape': ['square', 'round', 'glow'],
-    'tonemap': ['clip', 'soft'], 'pan_mode': ['level', 'phase'],
+    'tonemap': ['clip', 'soft'], 'pan_mode': ['level', 'phase'], 'insert_mode': INSERT_MODES,
 }
+# Per-keyframe render overrides. Numbers tween between keyframes; choices (insert_mode) switch at the keyframe.
 ANIMATABLE = ['brightness', 'gamma', 'dot_size', 'trail_ms', 'glow', 'glow_radius', 'saturation', 'threshold',
-              'db_floor', 'background', 'pan_spread']
+              'db_floor', 'background', 'pan_spread', 'insert_mode', 'insert_count', 'insert_neighbours',
+              'insert_max_dist', 'insert_brightness']
 RENDER_PRESETS = {
     'Classic v5': dict(RENDER_DEFAULTS),
     'Punchy beats': dict(RENDER_DEFAULTS, amp_scale='db', db_floor=-48.0, normalise='running', running_release_s=1.5,
@@ -80,6 +86,14 @@ RENDER_TIPS = {
     'mirror_x': 'Kaleidoscope: also draw every dot mirrored left/right.',
     'mirror_y': 'Also draw every dot mirrored top/bottom (bass in the middle).',
     'edge_margin': 'Keeps dots fully on screen (fraction of the half-width).',
+    'insert_mode': 'Insert extra dots on screen between existing dots (on the diagonal between them):\n'
+                   'order = between dots next to each other in frequency order (a path from bass to treble);\n'
+                   'nearest = between each dot and its nearest neighbours on screen (a web);\n'
+                   'both = the two combined. Can be switched per keyframe.',
+    'insert_count': 'Dots inserted in each gap, evenly spaced along the line between the two dots.',
+    'insert_neighbours': 'Nearest mode: how many nearest dots each dot connects to.',
+    'insert_max_dist': 'Only gaps shorter than this are filled (fraction of the screen height).',
+    'insert_brightness': 'Brightness of the inserted dots relative to the dots they sit between.',
 }
 
 ALIGN_MODES = ['centred', 'live', 'custom']
@@ -205,6 +219,10 @@ class Project:
             need |= MODES[k.mode].needs_for(k.params)
         return need
 
+    def uses_insert(self):
+        """True if any part of the timeline inserts dots between dots."""
+        return any(k.render_overrides.get('insert_mode', self.render['insert_mode']) != 'off' for k in self.keyframes)
+
     def key_by_id(self, kid):
         for k in self.keyframes:
             if k.id == kid:
@@ -231,6 +249,8 @@ class Project:
             r1.update(k1.render_overrides)
             for key in ANIMATABLE:
                 a, b = r[key], r1[key]
+                if isinstance(a, (str, bool)):
+                    continue                      # choices hold until the next keyframe
                 if isinstance(a, list):
                     r[key] = [float(x + (y - x) * u) for x, y in zip(a, b)]
                 else:

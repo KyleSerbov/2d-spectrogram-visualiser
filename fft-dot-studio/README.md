@@ -72,6 +72,23 @@ Between keyframes, the same mode **morphs** (parameters and palettes are interpo
 **crossfade** (each dot's colour is blended in OKLab). Easings: linear, smooth, ease in/out/in-out,
 exponential, hold.
 
+## Insert between dots
+
+Render > *Insert between dots* adds extra dots on the straight line between existing dots. This line is
+usually diagonal, because x is pan and y is frequency.
+
+- *Order*: between dots that are next to each other in frequency order, giving a path from bass to treble.
+- *Nearest*: between each dot and its nearest neighbours on screen, giving a web.
+- *Both*: the two combined.
+
+*Points per gap*, *neighbours*, *max distance* (a fraction of the screen height) and *brightness* can
+all be set. Every insert setting can be overridden per keyframe. The numbers tween between keyframes,
+and the mode switches at each keyframe.
+
+An inserted dot has no FFT bin of its own. Its height on screen gives its frequency, which is a
+fractional position in the draw order. The Exact sound decoder plays it at that frequency, with a level
+blended from its two parent dots, and the Screen decoder reads it like any other dot.
+
 ## Dots → sound
 
 The **Sound** panel turns the dots back into audio. Only drawn dots make sound, so the threshold, peak

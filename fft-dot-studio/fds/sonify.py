@@ -15,7 +15,12 @@ Dots carry no phase, so it is invented:
 * noise  - random phase every frame (whispery).
 
 Only dots that are actually drawn make sound: threshold, peak picking, max dots and colour modes that
-hide or dim dots all apply. Frame f sounds at the time the viewer shows it (track time f * hop)."""
+hide or dim dots all apply. Frame f sounds at the time the viewer shows it (track time f * hop).
+
+Dots inserted between dots (Render > Insert between dots) have no bin of their own: their screen height
+gives a frequency, i.e. a fractional draw order. The screen decoder reads them like any other dot; the
+exact decoder plays them on a fine 2.7 Hz grid with levels blended from their two parent dots
+(scaled by 1/sqrt(points per gap) so the added energy stays comparable to the original dots)."""
 import hashlib
 import json
 import threading
@@ -28,7 +33,7 @@ from . import analysis as A
 
 SR = A.SR
 SONIFY_DEFAULTS = {'source': 'exact', 'phase': 'locked', 'stereo': 'original', 'colour_weight': 0.0,
-                   'range_db': 48.0, 'rows': 1080, 'gain_db': 0.0}
+                   'range_db': 48.0, 'rows': 1080, 'gain_db': 0.0, 'insert_db': 0.0}
 SOURCES = [('exact', 'Exact (dot draw order -> frequency bin)'), ('screen', 'Screen (decode the picture)')]
 PHASES = [('locked', 'Clean (peak-locked phase)'), ('free', 'Chorus (free-running phase)'),
           ('noise', 'Whisper (random phase)')]
@@ -50,6 +55,7 @@ def sanitize(s):
     out['range_db'] = float(np.clip(out['range_db'], 6.0, 120.0))
     out['rows'] = int(np.clip(out['rows'], 16, 8640))
     out['gain_db'] = float(np.clip(out['gain_db'], -40.0, 24.0))
+    out['insert_db'] = float(np.clip(out['insert_db'], -60.0, 12.0))
     return out
 
 
@@ -193,7 +199,7 @@ class Sonifier:
         self.started = time.perf_counter()
         self.elapsed = 0.0
         self._grids = {}
-        self._full = None
+        self.uses_insert = engine.project.uses_insert()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -242,11 +248,17 @@ class Sonifier:
             return self._grids[key]
         hop = sp.hop
         grids = []
+        fine_L = min(SCREEN_NFFT, max(4 * hop, 2048))
         if self.s['source'] == 'screen':
-            g = Grid(SCREEN_NFFT, 1, SCREEN_NFFT // 2, min(SCREEN_NFFT, max(4 * hop, 2048)), hop, self.s['phase'], 7)
+            g = Grid(SCREEN_NFFT, 1, SCREEN_NFFT // 2, fine_L, hop, self.s['phase'], 7)
             g.calibrate(np.ones(1))
-            grids.append((g, None))
+            grids.append((g, 'screen'))
         else:
+            if self.uses_insert:
+                # inserted dots sit at fractional draw-order positions: a fine grid (2.7 Hz bins) carries them
+                g = Grid(SCREEN_NFFT, 1, SCREEN_NFFT // 2, fine_L, hop, self.s['phase'], 5)
+                g.calibrate(np.ones(1))
+                grids.append((g, 'insert'))
             start = 0
             for bi, b in enumerate(sp.bands):
                 m = (b.freqs >= render['freq_min']) & (b.freqs <= render['freq_max'])
@@ -263,30 +275,55 @@ class Sonifier:
         self._grids[key] = grids
         return grids
 
-    def _amps(self, ctx, render, inten, gain, rgb, grid):
+    @staticmethod
+    def _bin_of_y(y, render, grid):
+        """Screen height -> frequency -> (fractional draw order rounded to) a bin of the fine grid."""
+        from .project import y_to_freq
+        fr = y_to_freq(y, render['freq_min'], render['freq_max'], render['freq_scale'])
+        return np.clip(np.round(fr * grid.nfft / SR).astype(np.int64), grid.k_lo, grid.k_hi - 1) - grid.k_lo
+
+    def _screen_amps(self, x, y, inten, rgb, render, grid):
+        s = self.s
+        K = grid.K
+        aL, aR = np.zeros(K), np.zeros(K)
+        vis = inten > 0
+        if not vis.any():
+            return aL, aR
+        v = inten[vis]
+        cw = s['colour_weight']
+        if cw > 0:
+            v = v * ((1 - cw) + cw * (np.clip(rgb[vis], 0, 1) @ LUMA))
+        v = np.clip(v, 0, 1)
+        amp = np.where(v > 0, 10 ** ((v - 1) * s['range_db'] / 20), 0.0) * SCREEN_LEVEL
+        rows = s['rows']
+        k = self._bin_of_y((np.floor(y[vis] * rows) + 0.5) / rows, render, grid)
+        xv = -x[vis] if render['flip_x'] else x[vis]
+        th = (np.clip(xv, -1, 1) + 1) * (np.pi / 4)
+        np.add.at(aL, k, amp * np.cos(th) * np.sqrt(2))
+        np.add.at(aR, k, amp * np.sin(th) * np.sqrt(2))
+        return aL, aR
+
+    def _insert_amps(self, ins, full, render, grid):
+        """Exact decoder: an inserted dot's level is blended from its two parent dots' levels; its frequency
+        comes from where it sits on screen."""
+        K = grid.K
+        aL, aR = np.zeros(K), np.zeros(K)
+        if ins is None:
+            return aL, aR
+        fl, fr = full
+        a, b, t = ins['a'], ins['b'], ins['t']
+        n = max(1, int(round(render.get('insert_count', 1))))
+        g = float(render.get('insert_brightness', 1.0)) / np.sqrt(n) * 10 ** (self.s['insert_db'] / 20)
+        k = self._bin_of_y(ins['y'], render, grid)
+        np.add.at(aL, k, (fl[a] + (fl[b] - fl[a]) * t) * g)
+        np.add.at(aR, k, (fr[a] + (fr[b] - fr[a]) * t) * g)
+        return aL, aR
+
+    def _amps(self, ctx, render, inten, gain, rgb):
+        """Exact decoder: L/R level of every dot in draw order (0 where not drawn)."""
         s = self.s
         vis = inten > 0
         cw = s['colour_weight']
-        if s['source'] == 'screen':
-            K = grid.K
-            aL, aR = np.zeros(K), np.zeros(K)
-            if not vis.any():
-                return aL, aR
-            v = inten[vis]
-            if cw > 0:
-                v = v * ((1 - cw) + cw * (np.clip(rgb[vis], 0, 1) @ LUMA))
-            v = np.clip(v, 0, 1)
-            amp = np.where(v > 0, 10 ** ((v - 1) * s['range_db'] / 20), 0.0) * SCREEN_LEVEL
-            from .project import y_to_freq
-            rows = s['rows']
-            yq = (np.floor(ctx.y[vis] * rows) + 0.5) / rows
-            fr = y_to_freq(yq, render['freq_min'], render['freq_max'], render['freq_scale'])
-            k = np.clip(np.round(fr * grid.nfft / SR).astype(np.int64), grid.k_lo, grid.k_hi - 1) - grid.k_lo
-            x = -ctx.x[vis] if render['flip_x'] else ctx.x[vis]
-            th = (np.clip(x, -1, 1) + 1) * (np.pi / 4)
-            np.add.at(aL, k, amp * np.cos(th) * np.sqrt(2))
-            np.add.at(aR, k, amp * np.sin(th) * np.sqrt(2))
-            return aL, aR
         w = np.clip(gain, 0, 4) * vis
         if cw > 0:
             w = w * ((1 - cw) + cw * (np.clip(rgb, 0, 1) @ LUMA))
@@ -331,19 +368,23 @@ class Sonifier:
             rows = [(np.zeros((C, g.K)), np.zeros((C, g.K)), np.zeros((C, g.K))) for g, _ in grids]
             for f in range(f0, f1):
                 with eng.lock:
-                    ctx, render, inten, gn, rgb = eng.frame_grid(ti, f, self.aspect)
+                    ctx, render, inten, gn, rgb, ins = eng.frame_grid(ti, f, self.aspect)
                 t = f * hop
-                for (g, sl), (AL, AR, PH) in zip(grids, rows):
+                full = self._amps(ctx, render, inten, gn, rgb) if (ctx.n and self.s['source'] == 'exact') else None
+                for (g, kind), (AL, AR, PH) in zip(grids, rows):
                     if ctx.n == 0:
                         PH[f - f0] = g.phases(np.zeros(g.K), t)
                         continue
-                    if sl is None:
-                        l, r = self._amps(ctx, render, inten, gn, rgb, g)
+                    if kind == 'screen':
+                        x, y, iv, cl = ctx.x, ctx.y, inten, rgb
+                        if ins is not None:
+                            x, y = np.concatenate([x, ins['x']]), np.concatenate([y, ins['y']])
+                            iv, cl = np.concatenate([iv, ins['inten']]), np.concatenate([cl, ins['rgb']])
+                        l, r = self._screen_amps(x, y, iv, cl, render, g)
+                    elif kind == 'insert':
+                        l, r = self._insert_amps(ins, full, render, g)
                     else:
-                        if self._full is None or self._full[0] is not ctx:
-                            self._full = (ctx, self._amps(ctx, render, inten, gn, rgb, g))
-                        fl, fr = self._full[1]
-                        l, r = fl[sl[0]:sl[1]], fr[sl[0]:sl[1]]
+                        l, r = full[0][kind[0]:kind[1]], full[1][kind[0]:kind[1]]
                     AL[f - f0], AR[f - f0] = l, r
                     PH[f - f0] = g.phases(l + r, t)
             lo, hi = f0 * hop - h, (f1 - 1) * hop + h
@@ -365,7 +406,6 @@ class Sonifier:
             done += C
             self.progress = min(done / total, 0.999)
         self._write(out, pend, pend_lo, gain)
-        self._full = None
         return done
 
 

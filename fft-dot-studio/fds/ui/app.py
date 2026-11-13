@@ -31,7 +31,10 @@ RENDER_GROUPS = [
     ('Time', ['smooth_attack_ms', 'smooth_release_ms', 'trail_ms']),
     ('Dots & look', ['dot_size', 'dot_shape', 'glow', 'glow_radius', 'tonemap', 'saturation', 'background']),
     ('Geometry', ['pan_mode', 'pan_spread', 'flip_x', 'flip_y', 'mirror_x', 'mirror_y', 'edge_margin']),
+    ('Insert between dots', ['insert_mode', 'insert_count', 'insert_neighbours', 'insert_max_dist',
+                             'insert_brightness']),
 ]
+INT_RANGES = {'max_dots': (0, 5000), 'insert_count': (1, 7), 'insert_neighbours': (1, 8)}
 RENDER_RANGES = {
     'freq_min': (5.0, 2000.0, True), 'freq_max': (1000.0, 40000.0, True), 'db_floor': (-120.0, -12.0, False),
     'running_release_s': (0.1, 20.0, True), 'threshold': (0.0001, 0.5, True), 'gamma': (0.2, 4.0, False),
@@ -39,6 +42,7 @@ RENDER_RANGES = {
     'smooth_attack_ms': (0.0, 500.0, False), 'smooth_release_ms': (0.0, 2000.0, False), 'trail_ms': (0.0, 2000.0, False),
     'dot_size': (1.0, 40.0, False), 'glow': (0.0, 3.0, False), 'glow_radius': (0.3, 4.0, False),
     'saturation': (0.0, 2.0, False), 'pan_spread': (0.1, 3.0, False), 'edge_margin': (0.0, 0.2, False),
+    'insert_max_dist': (0.005, 2.5, True), 'insert_brightness': (0.0, 2.0, False),
 }
 ANALYSIS_TIPS = {
     'window': 'FFT window size. Larger = finer pitch detail but blurrier in time.',
@@ -498,6 +502,13 @@ class StudioApp:
             s['gain_db'] = float(v)
             self.touch()
         tip('Exact mode is calibrated to the original level (0 dB). Peaks above -1 dBFS are softly limited.')
+        if s['source'] == 'exact' and self.project.uses_insert():
+            ch, v = imgui.slider_float('Inserted dots', float(s['insert_db']), -60.0, 12.0, '%+.1f dB')
+            if ch:
+                s['insert_db'] = float(v)
+                self.touch()
+            tip('Level of the dots inserted between dots (Render > Insert between dots). Each one plays at the\n'
+                'frequency of where it sits on screen (its fractional draw order), blended from its two parents.')
         imgui.pop_item_width()
         imgui.separator()
         st = self.sonify_state()
@@ -952,8 +963,8 @@ class StudioApp:
             out = imgui.checkbox(label, bool(val))
         elif key == 'background':
             out = imgui.color_edit3(label, list(val))
-        elif key == 'max_dots':
-            ch, v = imgui.slider_int(label, int(val), 0, 5000)
+        elif key in INT_RANGES:
+            ch, v = imgui.slider_int(label, int(round(val)), *INT_RANGES[key])
             out = (ch, int(v))
         else:
             lo, hi, lg = RENDER_RANGES.get(key, (0.0, 1.0, False))
