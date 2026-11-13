@@ -385,13 +385,6 @@ def run(out_dir=None, quick=False, gui=True):
           and len(src_h) - n <= 2 and pr['frames'] == ex.n_frames,
           f'{ex.audio_note}; {n}/{len(src_h)} packets identical, {pr["frames"]} frames, audio {pr["adur"]:.3f}s')
 
-    section('Scroll layout')
-    try:
-        _scroll_tests(out_dir, mgr, wav, gl)
-    except Exception as e:
-        traceback.print_exc()
-        check('scroll layout', False, str(e))
-
     section('Insert between dots')
     try:
         _insert_tests(out_dir, mgr, wav, gl)
@@ -526,46 +519,6 @@ def _insert_tests(out_dir, mgr, wav, gl):
         r2 = np.sqrt((y[int(7 * 44100):int(11 * 44100)] ** 2).mean())
         check(f'dots -> sound plays inserted dots ({src})', so.done and so.error is None and r1 > 0 and r2 > 0,
               f'level {20 * np.log10(r2 / r1):+.1f} dB with inserts vs without')
-
-
-def _scroll_tests(out_dir, mgr, wav, gl):
-    """Scroll layout: newest frame printed as one column at the right edge, older columns further left in
-    proportion to their age, the screen spanning scroll_seconds, and fast enough for live preview."""
-    from .engine import Engine
-    from .project import Keyframe, Project
-    from .renderer import Renderer
-    proj = Project()
-    proj.tracks = [wav]
-    proj.keyframes = [Keyframe(0.0, 'note_rainbow')]
-    proj.render.update(layout='scroll', scroll_seconds=4.0)
-    eng = Engine(proj, mgr)
-    t = 8.0
-    d = eng.gather(t)
-    hop_s = eng.tracks()[0].spectrum.hop / 44100
-    xs = np.unique(np.round(d['x'], 5))
-    right = 1 - proj.render['edge_margin']
-    step = 2 * hop_s / 4.0
-    ok = (abs(xs.max() - right) <= step + 1e-5 and xs.min() >= -1 - 1e-5 and xs.min() < -1 + 2 * step
-          and np.allclose(np.diff(xs), step, atol=1e-4))
-    check('scroll: columns from the right edge across the screen', ok,
-          f'{len(xs)} columns, x {xs.min():.3f} .. {xs.max():.3f}, spacing {np.diff(xs).mean():.4f} (expected {step:.4f})')
-    d2 = eng.gather(t + 1.0)
-    x_old = d['x'].max()
-    moved = np.round(d2['x'], 5)
-    check('scroll: the paper moves left by 2/scroll_seconds per second', abs((x_old - 0.5) - (right - 0.5)) < step + 1e-5
-          and np.isclose(moved, np.round(x_old - 0.5, 5), atol=step).any(), '1 s later the newest column is at '
-          f'{x_old - 0.5:.3f}')
-    ren = Renderer(gl, 1280, 720)
-    for tt in np.arange(5.0, 6.0, 1 / 30):
-        eng.gather(tt)
-    t0 = time.perf_counter()
-    for tt in np.arange(6.0, 7.0, 1 / 30):
-        ren.render(eng.gather(tt))
-    per = (time.perf_counter() - t0) / 30 * 1000
-    check('scroll: live preview speed', per < 33, f'{per:.1f} ms per frame (4 s on screen, {len(d["x"])} dots)')
-    ren.render(eng.gather(t))
-    from PIL import Image
-    Image.fromarray(ren.read_rgb()).save(os.path.join(out_dir, 'scroll_layout.png'))
 
 
 def _sonify_tests(out_dir, sf, A, mgr, wav, gl):

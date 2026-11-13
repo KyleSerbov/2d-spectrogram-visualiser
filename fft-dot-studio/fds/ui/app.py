@@ -25,7 +25,6 @@ from .widgets import V2, PaletteEditor, col32, help_marker, param_widget, tip
 PREVIEW_FPS = [('30', 30), ('60', 60), ('120', 120), ('uncapped', 0)]
 PROJECT_FILTER = ['FFT Dot Studio project', '*.fdsproj *.json', 'All files', '*']
 RENDER_GROUPS = [
-    ('Layout', ['layout', 'scroll_seconds', 'scroll_fade']),
     ('Frequency axis', ['freq_min', 'freq_max', 'freq_scale']),
     ('Amplitude', ['amp_scale', 'db_floor', 'normalise', 'running_release_s', 'threshold', 'gamma', 'brightness']),
     ('Dot selection', ['peak_pick', 'peak_min_dist', 'max_dots']),
@@ -44,7 +43,6 @@ RENDER_RANGES = {
     'dot_size': (1.0, 40.0, False), 'glow': (0.0, 3.0, False), 'glow_radius': (0.3, 4.0, False),
     'saturation': (0.0, 2.0, False), 'pan_spread': (0.1, 3.0, False), 'edge_margin': (0.0, 0.2, False),
     'insert_max_dist': (0.005, 2.5, True), 'insert_brightness': (0.0, 2.0, False),
-    'scroll_seconds': (0.5, 60.0, True), 'scroll_fade': (0.0, 1.0, False),
 }
 ANALYSIS_TIPS = {
     'window': 'FFT window size. Larger = finer pitch detail but blurrier in time.',
