@@ -72,6 +72,27 @@ Between keyframes, the same mode **morphs** (parameters and palettes are interpo
 **crossfade** (each dot's colour is blended in OKLab). Easings: linear, smooth, ease in/out/in-out,
 exponential, hold.
 
+## Dots → sound
+
+The **Sound** panel turns the dots back into audio. Only drawn dots make sound, so the threshold, peak
+picking, max dots and colour modes that hide or dim dots all change what you hear.
+
+- **Decoder**
+  - *Exact*: each dot keeps its draw order, which is the FFT bin it came from. Its exact frequency and its
+    own left/right level are put back into that bin, and an inverse FFT per frame rebuilds the sound.
+    A steady tone comes back at the same pitch and level.
+  - *Screen*: decodes only what the picture shows. Height gives pitch (rounded to pixel rows), x gives
+    pan, and brightness gives loudness on a dB range.
+- **Phase**: the dots store no phase, so it is invented.
+  - *Clean*: peaks are tracked at their true frequency, and the bins around each peak follow it.
+  - *Chorus*: every bin free-runs at its own frequency.
+  - *Whisper*: random phase.
+- **Colour weight**: lets the dot colour's brightness scale its loudness.
+
+Press **Render**. You can play while it renders. Press **L** to switch between the original audio and the
+dots. Use *Save dots audio* to write a WAV or FLAC file, or set *Soundtrack: Dots → sound* in the export
+settings to put it in the video.
+
 ## Timing
 
 - **Frame alignment** (Analysis panel; applies to the preview and to exports):
@@ -101,6 +122,7 @@ exponential, hold.
 | Ctrl+E | export |
 | F | fullscreen preview (Esc to leave) |
 | M | mute |
+| L | listen to the original audio / the dots |
 | F1 | help |
 
 In the timeline, Ctrl+wheel zooms and the wheel scrolls. In the palette bar, double-click to add a

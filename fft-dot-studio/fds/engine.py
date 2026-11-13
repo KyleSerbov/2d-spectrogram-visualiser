@@ -362,6 +362,29 @@ class Engine:
         overlay = (o0.overlay or []) if u < 0.5 else (o1.overlay or [])
         return rgb, gain, overlay
 
+    def _frame_eval(self, ti, f, aspect):
+        ta = self.tracks()[ti]
+        t = self.track_offset(ti) + f * ta.spectrum.hop / A.SR
+        render = self.project.render_at(t)
+        ctx = self.ctx(ti, f, render, aspect)
+        if ctx.n == 0:
+            z = np.zeros(0, np.float32)
+            return ctx, render, z, z, np.zeros((0, 3), np.float32), []
+        layers, _ = self.layers_at(t)
+        rgb, gain, overlay = self.colourise(ctx, layers)
+        inten = (np.power(np.clip(ctx.level, 0, None), render['gamma']) * render['brightness'] * gain).astype(np.float32)
+        keep = inten > 1e-4
+        if render['max_dots'] and keep.sum() > render['max_dots']:
+            thr = np.partition(inten[keep], -int(render['max_dots']))[-int(render['max_dots'])]
+            keep &= inten >= thr
+        return ctx, render, np.where(keep, inten, 0.0).astype(np.float32), gain, rgb, overlay
+
+    def frame_grid(self, ti, f, aspect=None):
+        """One frame's dots in draw order (one per spectrum bin, so index = exact frequency):
+        (ctx, render, intensity with 0 = not drawn, colour-mode gain, rgb)."""
+        ctx, render, inten, gain, rgb, _ov = self._frame_eval(ti, f, aspect or self.aspect)
+        return ctx, render, inten, gain, rgb
+
     def frame_dots(self, ti, f, aspect=None):
         aspect = aspect or self.aspect
         ta = self.tracks()[ti]
@@ -370,20 +393,9 @@ class Engine:
         hit = self._dots.get_(key)
         if hit is not None:
             return hit
-        t = self.track_offset(ti) + f * ta.spectrum.hop / A.SR
-        render = self.project.render_at(t)
-        ctx = self.ctx(ti, f, render, aspect)
-        layers, _ = self.layers_at(t)
-        if ctx.n == 0:
-            out = (np.zeros(0, np.float32),) * 3 + (np.zeros((0, 3), np.float32), [])
-        else:
-            rgb, gain, overlay = self.colourise(ctx, layers)
-            inten = (np.power(np.clip(ctx.level, 0, None), render['gamma']) * render['brightness'] * gain).astype(np.float32)
-            keep = inten > 1e-4
-            if render['max_dots'] and keep.sum() > render['max_dots']:
-                thr = np.partition(inten[keep], -int(render['max_dots']))[-int(render['max_dots'])]
-                keep &= inten >= thr
-            out = (ctx.x[keep], ctx.y[keep], inten[keep], np.ascontiguousarray(rgb[keep], dtype=np.float32), overlay)
+        ctx, render, inten, gain, rgb, overlay = self._frame_eval(ti, f, aspect)
+        keep = inten > 0
+        out = (ctx.x[keep], ctx.y[keep], inten[keep], np.ascontiguousarray(rgb[keep], dtype=np.float32), overlay)
         self._dots.put(key, out)
         return out
 

@@ -14,6 +14,8 @@ from ..engine import Engine
 from ..export import AUDIO_CODECS, CODECS, FPS_CHOICES, RESOLUTIONS, Exporter
 from ..modes import CATEGORIES, MODE_ORDER, MODES
 from ..playback import Player
+from ..sonify import PHASES, SOURCES, STEREO, Sonifier, sanitize as sanitize_sonify, state_key as sonify_key, \
+    write_audio
 from ..project import (ANIMATABLE, EASINGS, RENDER_CHOICES, RENDER_DEFAULTS, RENDER_PRESETS, RENDER_TIPS, Keyframe,
                        Project, y_to_freq)
 from ..vowel import DEFAULT_VOWEL_COLORS, REF_FORMANTS, VOWELS
@@ -114,6 +116,10 @@ class StudioApp:
         self.view_rect = None
         self.export_res_name = '1920x1080 (1080p)'
         self.show_help = False
+        self.sonifier = None
+        self.sound_msg = ''
+        self._skey_rev = None
+        self._skey = None
 
     # ================================================================== state helpers
     def touch(self):
@@ -228,6 +234,7 @@ class StudioApp:
 
     def set_project(self, proj):
         self.player.stop()
+        self.drop_sonify()
         self.project = proj
         self.engine.project = proj
         self.engine.invalidate()
@@ -303,6 +310,9 @@ class StudioApp:
         elif kind == 'export_path':
             default = self.project.export.get('path') or os.path.join(start, 'fft-dots.mp4')
             d = pfd.save_file('Export video', default, ['MP4 video', '*.mp4', 'Matroska', '*.mkv', 'QuickTime', '*.mov'])
+        elif kind == 'dots_audio':
+            d = pfd.save_file('Save dots audio', os.path.join(start, 'dots-sound.wav'),
+                              ['WAV audio', '*.wav', 'FLAC audio', '*.flac'])
         else:
             return
         self.dialog = (kind, d)
@@ -327,6 +337,8 @@ class StudioApp:
             path = res if os.path.splitext(res)[1] else res + '.mp4'
             self.project.export['path'] = path
             self.touch()
+        elif kind == 'dots_audio':
+            self.save_dots_audio(res if os.path.splitext(res)[1] else res + '.wav')
 
     # ================================================================== export
     def start_export(self, path=None):
@@ -340,16 +352,195 @@ class StudioApp:
             self.export_msg = 'Waiting for analysis the colour modes need: ' + '; '.join(blockers)
             self.log(self.export_msg)
             return
+        soundtrack = None
+        if ex.get('soundtrack') == 'dots':
+            st = self.sonify_state()
+            if st != 'ready':
+                self.export_msg = {'rendering': 'The dots audio is still rendering (Sound panel); export when it is done.',
+                                   'stale': 'The dots audio is out of date: press Render in the Sound panel first.'}.get(
+                    st, 'Render the dots audio in the Sound panel first (or set Soundtrack to Original audio).')
+                self.log(self.export_msg)
+                return
+            soundtrack = self.sonifier.segments
         self.player.stop()
         try:
             self.exporter = Exporter(self.engine, self.gl, path, ex['width'], ex['height'], ex['fps'], ex['codec'],
-                                     ex['audio'], ex['quality'])
+                                     ex['audio'], ex['quality'], soundtrack=soundtrack)
             self.exporter.start()
             self.export_msg = ''
         except Exception as e:
             self.exporter = None
             self.export_msg = f'Export failed: {e}'
             self.log(self.export_msg)
+
+    # ================================================================== dots -> sound
+    def _sonify_key(self):
+        rev = (self.project.revision, self.manager.revision)
+        if self._skey_rev != rev:
+            self._skey = sonify_key(self.project, self.engine)
+            self._skey_rev = rev
+        return self._skey
+
+    def sonify_state(self):
+        """'none' | 'rendering' | 'ready' | 'stale' | 'error' | 'cancelled'."""
+        so = self.sonifier
+        if so is None:
+            return 'none'
+        if so.error:
+            return 'error'
+        if so.cancelled:
+            return 'cancelled'
+        if so.key != self._sonify_key():
+            return 'stale'
+        return 'ready' if so.done else 'rendering'
+
+    def start_sonify(self):
+        if self.total() <= 0:
+            self.sound_msg = 'Add some audio first.'
+            return
+        blockers = self.engine.export_blockers()
+        if blockers:
+            self.sound_msg = 'Waiting for analysis: ' + '; '.join(blockers)
+            return
+        if self.sonifier is not None:
+            self.sonifier.cancel()
+        self.sound_msg = ''
+        self.sonifier = Sonifier(self.engine, self.project.sonify, key=self._sonify_key()).start()
+        self.player.alt_segments = self.sonifier.segments
+        if not self.player.use_alt:
+            self.set_listen(True)
+        elif self.player.playing:
+            self.player.play(self.player.time())
+
+    def drop_sonify(self):
+        if self.sonifier is not None:
+            self.sonifier.cancel()
+        self.sonifier = None
+        self.player.alt_segments = None
+        self.player.use_alt = False
+
+    def set_listen(self, dots):
+        dots = bool(dots) and self.player.alt_segments is not None
+        if dots == self.player.use_alt:
+            return
+        self.player.use_alt = dots
+        if self.player.playing:
+            self.player.play(self.player.time())
+        self.log('Listening to the dots' if dots else 'Listening to the original audio')
+
+    def save_dots_audio(self, path):
+        so = self.sonifier
+        if so is None or not so.done:
+            self.sound_msg = 'Render the dots audio first.'
+            return
+        self.sound_msg = f'Saving {os.path.basename(path)}...'
+
+        def work():
+            try:
+                write_audio(path, so.segments, so.total_samples)
+                self.sound_msg = f'Saved {path}'
+            except Exception as e:
+                self.sound_msg = f'Save failed: {e}'
+        import threading
+        threading.Thread(target=work, daemon=True).start()
+
+    def gui_sound(self):
+        s = self.project.sonify
+        imgui.push_text_wrap_pos(0)
+        imgui.text_disabled('Turns the dots back into sound: only the dots that are drawn make sound, at the '
+                            'pitch, pan and loudness they are drawn with. Render, then play to listen (L switches '
+                            'between the original audio and the dots).')
+        imgui.pop_text_wrap_pos()
+        imgui.separator()
+        imgui.push_item_width(-110)
+
+        def combo(label, key, choices, help_text):
+            keys = [c[0] for c in choices]
+            ch, i = imgui.combo(label, keys.index(s[key]), [c[1] for c in choices])
+            if ch:
+                s[key] = keys[i]
+                self.touch()
+            tip(help_text)
+        combo('Decoder', 'source', SOURCES,
+              'Exact: every dot keeps its draw order, which is the FFT bin it came from, so its exact frequency\n'
+              'and its own left/right level come back. Highest quality.\n'
+              'Screen: decodes only what is visible in the picture: height -> pitch (rounded to pixel rows),\n'
+              'x -> pan, brightness -> loudness. Saturated (bright) dots all sound equally loud.')
+        combo('Phase', 'phase', PHASES,
+              'Dots carry no phase, so it is invented.\n'
+              'Clean: each peak is tracked at its true frequency and the bins around it follow it, so each\n'
+              'peak returns as one clean tone (closest to the original).\n'
+              'Chorus: every bin runs at its own frequency (phasey, shimmering).\n'
+              'Whisper: random phase every frame (breathy, noisy).')
+        if s['source'] == 'exact':
+            combo('Stereo', 'stereo', STEREO,
+                  "Original: each dot's own left and right levels.\nDot x position: pan from where the dot is drawn "
+                  '(follows Pan spread and Flip X).')
+        else:
+            ch, v = imgui.slider_float('Loudness range', float(s['range_db']), 6.0, 96.0, '%.0f dB')
+            if ch:
+                s['range_db'] = float(v)
+                self.touch()
+            tip('The faintest drawn dot is this many dB quieter than a fully bright one.')
+            ch, v = imgui.input_int('Pixel rows', int(s['rows']), 90, 360)
+            if ch:
+                s['rows'] = int(np.clip(v, 16, 8640))
+                self.touch()
+            tip('Vertical resolution the picture is read at (1080 = a 1080p video). Fewer rows = coarser pitch.')
+        ch, v = imgui.slider_float('Colour weight', float(s['colour_weight']), 0.0, 1.0, '%.2f')
+        if ch:
+            s['colour_weight'] = float(v)
+            self.touch()
+        tip('How much the dot colour matters: at 1, dark colours are quiet and bright ones loud (colour luminance\n'
+            'scales the loudness). At 0 the colour is ignored. Colour modes that hide or dim dots always apply.')
+        ch, v = imgui.slider_float('Output gain', float(s['gain_db']), -40.0, 24.0, '%+.1f dB')
+        if ch:
+            s['gain_db'] = float(v)
+            self.touch()
+        tip('Exact mode is calibrated to the original level (0 dB). Peaks above -1 dBFS are softly limited.')
+        imgui.pop_item_width()
+        imgui.separator()
+        st = self.sonify_state()
+        so = self.sonifier
+        if st == 'rendering':
+            if imgui.button('Cancel render', V2(-1, 0)):
+                so.cancel()
+        else:
+            label = {'none': 'Render dots audio', 'stale': 'Re-render (settings changed)'}.get(st, 'Re-render dots audio')
+            if imgui.button(label, V2(-1, 0)):
+                self.start_sonify()
+        if so is not None:
+            eta = so.eta()
+            txt = {'rendering': f'{so.progress * 100:.1f}%' + (f'   ETA {eta:.0f}s' if eta else ''),
+                   'ready': f'ready ({so.elapsed:.1f}s)', 'stale': 'out of date', 'error': 'failed',
+                   'cancelled': 'cancelled'}[st]
+            imgui.progress_bar(so.progress if st != 'ready' else 1.0, V2(-1, 0), txt)
+            if so.error:
+                imgui.push_text_wrap_pos(0)
+                imgui.text_colored(imgui.ImVec4(1, 0.5, 0.4, 1), so.error)
+                imgui.pop_text_wrap_pos()
+            elif st == 'ready' and so.limited:
+                imgui.text_disabled(f'{so.limited} samples softly limited; lower the output gain if it sounds squashed.')
+        imgui.begin_disabled(self.player.alt_segments is None)
+        imgui.text('Listen to:')
+        imgui.same_line()
+        if imgui.radio_button('Original', not self.player.use_alt):
+            self.set_listen(False)
+        imgui.same_line()
+        if imgui.radio_button('Dots', self.player.use_alt):
+            self.set_listen(True)
+        imgui.same_line()
+        imgui.text_disabled('(L)')
+        imgui.end_disabled()
+        imgui.begin_disabled(st not in ('ready', 'stale'))
+        if imgui.button('Save dots audio as WAV / FLAC...', V2(-1, 0)):
+            self.open_dialog('dots_audio')
+        imgui.end_disabled()
+        tip('16-bit, the whole timeline. To put it in a video, set Soundtrack to "Dots" in the Project panel export section.')
+        if self.sound_msg:
+            imgui.push_text_wrap_pos(0)
+            imgui.text_colored(imgui.ImVec4(1, 0.85, 0.4, 1), self.sound_msg)
+            imgui.pop_text_wrap_pos()
 
     # ================================================================== frame
     def post_init(self):
@@ -363,6 +554,8 @@ class StudioApp:
 
     def before_exit(self):
         self.player.stop()
+        if self.sonifier is not None:
+            self.sonifier.cancel()
         if self.exporter is not None and not self.exporter.done:
             self.exporter.cancel()
 
@@ -386,7 +579,8 @@ class StudioApp:
         if not self.headless:
             rp = hello_imgui.get_runner_params()
             fps = self.project.preview_fps
-            busy = self.player.playing or self.exporter is not None or self.manager.busy()
+            busy = (self.player.playing or self.exporter is not None or self.manager.busy()
+                    or (self.sonifier is not None and self.sonifier.running))
             rp.fps_idling.enable_idling = not busy
             rp.fps_idling.fps_max = int(fps) if fps else 0
             rp.fps_idling.vsync_to_monitor = bool(fps)
@@ -428,6 +622,11 @@ class StudioApp:
             self.delete_keyframe(self.selected_kf)
         elif pressed(K.m):
             self.player.muted = not self.player.muted
+        elif pressed(K.l) and not ctrl:
+            if self.player.alt_segments is None:
+                self.log('Render the dots audio first (Sound panel).')
+            else:
+                self.set_listen(not self.player.use_alt)
         elif pressed(K.home):
             self.seek(0.0)
         elif pressed(K.end):
@@ -1067,6 +1266,13 @@ class StudioApp:
             self.touch()
         tip("Copy original puts the source file's audio stream into the video untouched: no quality loss and no\n"
             'size increase. Needs a single track; otherwise lossless sources become FLAC and lossy ones AAC.')
+        sts = ['original', 'dots']
+        ch, i = imgui.combo('Soundtrack', sts.index(ex.get('soundtrack', 'original')) if ex.get('soundtrack') in sts else 0,
+                            ['Original audio', 'Dots -> sound (Sound panel)'])
+        if ch:
+            ex['soundtrack'] = sts[i]
+            self.touch()
+        tip('Dots -> sound uses the audio rendered in the Sound panel (render it first).')
         ch, v = imgui.slider_int('Quality (CRF/CQ)', int(ex['quality']), 10, 35)
         if ch:
             ex['quality'] = v
@@ -1208,7 +1414,8 @@ SHORTCUTS = [
     ('Home / End', 'Start / end'), ('K', 'Add keyframe at playhead'), ('Ctrl+D', 'Duplicate keyframe at playhead'),
     ('Delete', 'Delete selected keyframe'), ('Ctrl+Z / Ctrl+Y', 'Undo / redo'), ('Ctrl+S', 'Save (Shift: save as)'),
     ('Ctrl+O / Ctrl+N', 'Open / new project'), ('Ctrl+I', 'Add audio'), ('Ctrl+E', 'Export video'),
-    ('F', 'Fullscreen preview (Esc to leave)'), ('M', 'Mute'), ('F1', 'This help'),
+    ('F', 'Fullscreen preview (Esc to leave)'), ('M', 'Mute'),
+    ('L', 'Listen: original audio / dots -> sound'), ('F1', 'This help'),
     ('Timeline', 'drag ruler = scrub, wheel = scroll, Ctrl+wheel = zoom'),
     ('Keyframe lane', 'double-click = add, drag = move (Shift snaps to beats), right-click = menu'),
     ('Palette bar', 'double-click = add stop, drag stop = move, right-click stop = delete'),
@@ -1251,6 +1458,7 @@ def build_runner_params(app, headless=False):
         win('Analysis', 'LeftSpace', app.gui_analysis),
         win('Keyframe', 'RightSpace', app.gui_keyframe),
         win('Render', 'RightSpace', app.gui_render),
+        win('Sound', 'LeftSpace', app.gui_sound),
     ]
     if headless:
         rp.platform_backend_type = hello_imgui.PlatformBackendType.null

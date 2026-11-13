@@ -23,6 +23,8 @@ class Player:
         self.device_ok = True
         self._wall = None
         self._segments = []
+        self.alt_segments = None     # dots -> sound buffers [(start, int16 (n, 2))]
+        self.use_alt = False
 
     def _build_segments(self):
         offs, total = self.engine.offsets()
@@ -30,7 +32,7 @@ class Player:
         for o, ta in zip(offs, self.engine.tracks()):
             if ta.audio is not None:
                 segs.append((int(round(o * SR)), ta.audio))
-        self._segments = segs
+        self._segments = self.alt_segments if (self.use_alt and self.alt_segments is not None) else segs
         self._total = int(round(total * SR))
 
     def _callback(self, outdata, frames, time_info, status):

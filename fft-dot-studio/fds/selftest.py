@@ -385,6 +385,13 @@ def run(out_dir=None, quick=False, gui=True):
           and len(src_h) - n <= 2 and pr['frames'] == ex.n_frames,
           f'{ex.audio_note}; {n}/{len(src_h)} packets identical, {pr["frames"]} frames, audio {pr["adur"]:.3f}s')
 
+    section('Dots -> sound')
+    try:
+        _sonify_tests(out_dir, sf, A, mgr, wav, gl)
+    except Exception as e:
+        traceback.print_exc()
+        check('dots -> sound', False, str(e))
+
     if gui:
         section('Editor UI (headless ImGui null backends, scripted input)')
         try:
@@ -449,6 +456,57 @@ def _click_test(out_dir, sf, A):
             name = {'centred': 'Centred, offset 0', 'live': 'Live-style',
                     'custom': f'Custom {off:+.0f} ms'}[mode]
             check(f'click alignment [{preset}] {name}', ok, '; '.join(res))
+
+
+def _sonify_tests(out_dir, sf, A, mgr, wav, gl):
+    """Exact decoding of a steady tone returns its pitch and level; every decoder/phase renders the song;
+    the dots soundtrack exports with the right length."""
+    from .engine import Engine
+    from .export import Exporter, probe
+    from .project import Keyframe, Project
+    from .sonify import PHASES, Sonifier
+    sr = A.SR
+    t = np.arange(4 * sr) / sr
+    f0 = 441.7
+    tone = np.stack([0.5 * np.sin(2 * np.pi * f0 * t), 0.25 * np.sin(2 * np.pi * f0 * t)], 1)
+    tpath = os.path.join(out_dir, 'sonify_tone.wav')
+    sf.write(tpath, tone.astype(np.float32), sr, subtype='PCM_24')
+    for preset in ('Classic v5', 'Smooth bass'):
+        m = A.AnalysisManager(use_demucs=False, sync=True)
+        m.set_settings(A.ANALYSIS_PRESETS[preset])
+        m.get(tpath)
+        proj = Project()
+        proj.tracks = [tpath]
+        proj.keyframes = [Keyframe(0.0, 'mono')]
+        proj.render['threshold'] = 0.0005
+        eng = Engine(proj, m)
+        so = Sonifier(eng, {'source': 'exact', 'phase': 'locked'}).start().wait()
+        y = so.out[0][sr:-sr].astype(np.float64) / 32767
+        X = np.abs(np.fft.rfft(y[:, 0] * np.hanning(len(y)), 1 << 20))
+        fp = np.argmax(X) * sr / (1 << 20)
+        lv = 20 * np.log10(np.sqrt((y ** 2).mean(0)) / (np.array([0.5, 0.25]) / np.sqrt(2)))
+        check(f'exact dots -> sound keeps pitch and L/R level ({preset})', so.error is None and abs(fp - f0) < 0.5
+              and np.all(np.abs(lv) < 0.5), f'{fp:.2f} Hz (true {f0}), level {lv[0]:+.2f} / {lv[1]:+.2f} dB')
+    proj = Project()
+    proj.tracks = [wav]
+    proj.keyframes = [Keyframe(0.0, 'note_rainbow')]
+    eng = Engine(proj, mgr)
+    orig = eng.tracks()[0].audio.astype(np.float64) / 32767
+    for src in ('exact', 'screen'):
+        for ph, _ in PHASES:
+            t0 = time.time()
+            so = Sonifier(eng, {'source': src, 'phase': ph, 'colour_weight': 0.5}).start().wait()
+            y = so.out[0].astype(np.float64) / 32767
+            db = 20 * np.log10(np.sqrt((y ** 2).mean()) / np.sqrt((orig ** 2).mean()) + 1e-12)
+            check(f'dots -> sound renders: {src} / {ph}', so.done and so.error is None and -30 < db < 12,
+                  f'{db:+.1f} dB vs original, {time.time() - t0:.1f}s')
+    so = Sonifier(eng, {'source': 'exact', 'phase': 'locked'}).start().wait()
+    outp = os.path.join(out_dir, 'export_dots_sound.mp4')
+    ex = Exporter(eng, gl, outp, 320, 180, 30, 'auto', 'copy', 28, soundtrack=so.segments)
+    ex.run_blocking()
+    pr = probe(outp)
+    check('export with the dots soundtrack', ex.audio_used == 'aac' and pr['frames'] == ex.n_frames
+          and abs(pr['adur'] - ex.exact_duration) < 0.03, f'{ex.audio_note}; audio {pr["adur"]:.3f}s')
 
 
 def _v6_notes_matches(ctx):
@@ -600,6 +658,8 @@ def gui_smoke(wav, flac, gl, out_dir):
                 for name in RENDER_PRESETS:
                     app.project.render.update(RENDER_PRESETS[name])
                 app.touch()
+            if f == g + 17:
+                app.start_sonify()
             if f == g + 18:
                 app.fullscreen = True
             if f == g + 20:
@@ -611,7 +671,8 @@ def gui_smoke(wav, flac, gl, out_dir):
                 app.start_export()
             if f > g + 22 and app.exporter is not None and app.exporter.done and 'export_done' not in state:
                 state['export_done'] = f
-            if f == g + 200 or (state.get('export_done') and f > state['export_done'] + 3):
+            sonify_busy = app.sonifier is not None and app.sonifier.running
+            if f == g + 2000 or (state.get('export_done') and f > state['export_done'] + 3 and not sonify_busy):
                 hello_imgui.get_runner_params().app_shall_exit = True
             orig_pre()
         except Exception as e:
@@ -648,6 +709,12 @@ def gui_smoke(wav, flac, gl, out_dir):
           f'after undo {state.get("after_undo")}')
     gx = os.path.join(out_dir, 'gui_export.mp4')
     check('export from the UI finished', os.path.exists(gx) and state.get('export_done') is not None)
+    so = app.sonifier
+    if so is not None:
+        so.wait()
+    check('Sound panel renders the dots audio', so is not None and so.done and so.error is None
+          and app.player.use_alt and app.sonify_state() in ('ready', 'stale'),
+          f'state {app.sonify_state()}, error {so.error if so else None}')
     img = app.renderer.read_rgb()
     from PIL import Image
     Image.fromarray(img).save(os.path.join(out_dir, 'gui_viewer_last_frame.png'))

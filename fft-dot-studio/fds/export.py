@@ -59,7 +59,7 @@ def nvenc_works(codec='h264_nvenc'):
 
 class Exporter:
     def __init__(self, engine, gl_ctx, path, width=1920, height=1080, fps=30, codec='auto', audio='aac', quality=18,
-                 t_start=0.0, t_end=None):
+                 t_start=0.0, t_end=None, soundtrack=None):
         from .renderer import Renderer
         self.engine = engine
         self.path = path
@@ -79,6 +79,7 @@ class Exporter:
         self.renderer = Renderer(gl_ctx, self.w, self.h)
         self.codec = codec
         self.audio = audio
+        self.soundtrack = soundtrack     # dots -> sound segments [(start_sample, int16 (n, 2))] or None
         self.quality = quality
         self._tmpdir = tempfile.mkdtemp(prefix='fds_export_')
         self.wav = os.path.join(self._tmpdir, 'audio.wav')
@@ -105,6 +106,11 @@ class Exporter:
         single track starting at 0 and the container accepts the codec; otherwise lossless sources fall back
         to FLAC and lossy ones to AAC. Returns the source path to copy from, or None to encode the mix."""
         self.audio_used, self.audio_note = self.audio, ''
+        if self.soundtrack is not None:
+            self.audio_used = 'aac' if self.audio == 'copy' else self.audio
+            self.audio_note = 'dots -> sound soundtrack' + (
+                ' (new audio, so Copy original becomes AAC 320k; pick FLAC for lossless)' if self.audio == 'copy' else '')
+            return None
         if self.audio != 'copy':
             return None
         paths = self.engine.project.tracks
@@ -190,7 +196,11 @@ class Exporter:
         n_total = int(round(self.exact_duration * SR))
         start = int(round(self.t_start * SR))
         offs, _ = self.engine.offsets()
-        segs = [(int(round(o * SR)) - start, ta.audio) for o, ta in zip(offs, self.engine.tracks()) if ta.audio is not None]
+        if self.soundtrack is not None:
+            segs = [(s0 - start, arr) for s0, arr in self.soundtrack]
+        else:
+            segs = [(int(round(o * SR)) - start, ta.audio) for o, ta in zip(offs, self.engine.tracks())
+                    if ta.audio is not None]
         chunk = SR * 10
         with sf.SoundFile(self.wav, 'w', SR, 2, subtype='PCM_24', format='WAV') as f:
             for pos in range(0, n_total, chunk):

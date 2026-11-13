@@ -9,6 +9,8 @@ import numpy as np
 from .analysis import ANALYSIS_DEFAULTS, sanitize_settings
 from .modes import MODES, MODE_ORDER
 from .palettes import Palette
+from .sonify import SONIFY_DEFAULTS
+from .sonify import sanitize as sanitize_sonify
 
 PROJECT_VERSION = 1
 
@@ -188,7 +190,8 @@ class Project:
         self.use_demucs = True
         self.vocal_source = 'auto'
         self.export = {'fps': 30, 'width': 1920, 'height': 1080, 'codec': 'auto', 'audio': 'copy',
-                       'quality': 18, 'path': ''}
+                       'quality': 18, 'path': '', 'soundtrack': 'original'}
+        self.sonify = dict(SONIFY_DEFAULTS)
         self.revision = 0
 
     # ---- keyframes
@@ -249,7 +252,7 @@ class Project:
                 'analysis': dict(self.analysis), 'align': dict(self.align),
                 'preview_latency': dict(self.preview_latency), 'preview_fps': self.preview_fps,
                 'gap_s': self.gap_s, 'use_demucs': self.use_demucs, 'vocal_source': self.vocal_source,
-                'export': dict(self.export)}
+                'export': dict(self.export), 'sonify': dict(self.sonify)}
 
     @classmethod
     def from_dict(cls, d, base_dir=None):
@@ -271,6 +274,7 @@ class Project:
         p.use_demucs = bool(d.get('use_demucs', True))
         p.vocal_source = d.get('vocal_source', 'auto')
         p.export.update({k: v for k, v in d.get('export', {}).items() if k in p.export})
+        p.sonify = sanitize_sonify(d.get('sonify', {}))
         return p
 
     def save(self, path):
