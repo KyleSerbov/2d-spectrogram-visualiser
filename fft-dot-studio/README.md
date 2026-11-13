@@ -49,18 +49,18 @@ to `tools/ffmpeg`), or `FDS_FFMPEG` if set. Without it, export falls back to lib
 
 Ported from earlier versions:
 
-| Mode | Source version |
+| Mode (as listed in the app) | Source folder in `temp` |
 |---|---|
-| Mono White | v1–v5 |
-| Note Rainbow | v6 rainbow |
-| Note Hue Continuous | portfolio |
-| Note Regions | v6 notes / v7 |
-| Note Regions Blend | v6 notes-blending |
-| Peaks Only Rainbow | rainbow-improved |
-| Peak Halo | rainbow-improved-blending |
-| Split Bass Rainbow / Treble Regions | blending-update |
-| Peak Sparkle | update-2, first GitHub version |
-| Beat Zones | v7 |
+| v5: Mono White | v1-v5 |
+| v6-colour-rainbow: Note Rainbow | v6-colour-rainbow |
+| Portfolio: Note Hue Continuous | the first GitHub portfolio version |
+| v6-colour-notes: Note Regions (also v7) | v6-colour-notes (v7-beat-detection uses the same colouring) |
+| v6-colour-notes-blending: Note Regions Blend | v6-colour-notes-blending |
+| v6-colour-rainbow-improved: Peaks Only | v6-colour-rainbow-improved |
+| v6-colour-rainbow-improved-blending: Peak Halo | v6-colour-rainbow-improved-blending |
+| v6-...-blending-update: Bass Rainbow / Treble Regions | v6-colour-rainbow-improved-blending-update |
+| v6-...-blending-update-2: Peak Sparkle (portfolio v1) | v6-colour-rainbow-improved-blending-update-2 |
+| v7-beat-detection: Beat Zones | v7-beat-detection |
 
 New modes: Radial Glow (centre colour fading outwards, with the centre at the screen centre, the live
 dot centroid or a custom point), Polar Swirl, Amplitude Heat, Frequency Gradient, Stereo Field,

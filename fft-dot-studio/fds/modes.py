@@ -227,14 +227,14 @@ def _vowel_hold(ta):
 
 # ============================================================================ PORTED MODES
 
-@mode('mono', 'Mono White (v5)', 'Ported', 'The original v1-v5 look: every dot white, brightness from amplitude.',
+@mode('mono', 'v5: Mono White', 'Ported', 'The original v1-v5 look: every dot white, brightness from amplitude.',
       palette='White')
 def m_mono(ctx, p, pal, up):
     rgb = np.ones((ctx.n, 3), np.float32)
     return ModeOut(pick(rgb, np.full(ctx.n, 0.5), pal, up))
 
 
-@mode('note_rainbow', 'Note Rainbow (v6 rainbow)', 'Ported',
+@mode('note_rainbow', 'v6-colour-rainbow: Note Rainbow', 'Ported',
       'Every dot coloured by its own pitch: semitone hues (C red ... B magenta) blended linearly in RGB '
       'between the nearest semitones. Faithful port of v6-colour-rainbow.',
       [Param('order', 'Note order', 'choice', 'chromatic', choices=['chromatic', 'fifths'],
@@ -246,7 +246,7 @@ def m_note_rainbow(ctx, p, pal, up):
     return ModeOut(pick(rainbow_lerp(midi, p['order']), s, pal, up))
 
 
-@mode('note_hue', 'Note Hue Continuous (portfolio)', 'Ported',
+@mode('note_hue', 'Portfolio: Note Hue Continuous', 'Ported',
       'Continuous hue = (MIDI pitch mod 12)/12 for every dot (the get_note_color of the portfolio version).',
       native=True)
 def m_note_hue(ctx, p, pal, up):
@@ -255,7 +255,7 @@ def m_note_hue(ctx, p, pal, up):
     return ModeOut(pick(note_hue(midi), s, pal, up))
 
 
-@mode('note_regions', 'Note Regions (v6 notes / v7)', 'Ported',
+@mode('note_regions', 'v6-colour-notes: Note Regions (also v7)', 'Ported',
       'Greedy peak picking in (pan, log-freq) space; every dot takes the semitone colour of its nearest peak, '
       'giving solid colour regions. Port of v6-colour-notes and v7-beat-detection.',
       [Param('min_dist', 'Min peak distance', 'float', 0.15, 0.005, 0.5, tip='Minimum distance between peaks in normalised pan/frequency space.'),
@@ -264,16 +264,19 @@ def m_note_hue(ctx, p, pal, up):
 def m_note_regions(ctx, p, pal, up):
     amp = ctx.amp_rel
     cand = ctx.visible & (amp >= p['min_amp'] * (amp[ctx.visible].max() if ctx.visible.any() else 1))
-    pk = greedy_peaks(ctx.x, ctx.y, amp, cand, p['min_dist'])
+    # Distances in v6's own space (raw pan, log 20 Hz-40 kHz), not the display mapping, so regions match v6.
+    vx = ctx.pan
+    vy = (np.log(np.maximum(ctx.freq, 1e-3) / 20.0) / np.log(40000.0 / 20.0)).astype(np.float32)
+    pk = greedy_peaks(vx, vy, amp, cand, p['min_dist'])
     if len(pk) == 0:
         return ModeOut(pick(np.ones((ctx.n, 3), np.float32), np.full(ctx.n, 0.5), pal, up))
     midi = midi_of(ctx.freq[pk])
     pc = rainbow_lerp(midi)
-    near, _ = nearest(ctx.x, ctx.y, ctx.x[pk], ctx.y[pk])
+    near, _ = nearest(vx, vy, vx[pk], vy[pk])
     return ModeOut(pick(pc[near], ((midi % 12) / 12)[near], pal, up))
 
 
-@mode('note_regions_blend', 'Note Regions Blend (v6 notes-blending)', 'Ported',
+@mode('note_regions_blend', 'v6-colour-notes-blending: Note Regions Blend', 'Ported',
       'find_peaks with parabolic frequency refinement, hue-interpolated peak colours, and inverse-distance '
       'weighted blending of all peak colours for every dot. Port of v6-colour-notes-blending.',
       [Param('min_dist', 'Min peak distance', 'float', 0.15, 0.005, 0.5),
@@ -305,7 +308,7 @@ def m_note_regions_blend(ctx, p, pal, up):
     return ModeOut(pick(rgb.astype(np.float32), s, pal, up))
 
 
-@mode('peaks_rainbow', 'Peaks Only Rainbow (rainbow-improved)', 'Ported',
+@mode('peaks_rainbow', 'v6-colour-rainbow-improved: Peaks Only', 'Ported',
       'Only spectral peaks (scipy find_peaks with prominence, separate bass/treble bands) are drawn, each in its '
       'rainbow semitone colour, brightness relative to its band. Port of v6-colour-rainbow-improved.',
       [Param('crossover', 'Crossover Hz', 'float', 1000.0, 100, 8000, log=True),
@@ -329,7 +332,7 @@ def m_peaks_rainbow(ctx, p, pal, up):
     return ModeOut(pick(rainbow_lerp(midi), (midi % 12) / 12, pal, up), gain=gain, visible=vis)
 
 
-@mode('peak_halo', 'Peak Halo (rainbow-improved-blending)', 'Ported',
+@mode('peak_halo', 'v6-colour-rainbow-improved-blending: Peak Halo', 'Ported',
       'Peaks plus every dot within a frequency window around them (down to a very low threshold), all in the '
       "peak's semitone colour; quieter bass band. Port of v6-colour-rainbow-improved-blending.",
       [Param('crossover', 'Crossover Hz', 'float', 1000.0, 100, 8000, log=True),
@@ -365,7 +368,7 @@ def m_peak_halo(ctx, p, pal, up):
     return ModeOut(pick(rgb, s, pal, up), gain=gain, visible=vis)
 
 
-@mode('split_rainbow_regions', 'Split: Bass Rainbow / Treble Regions (blending-update)', 'Ported',
+@mode('split_rainbow_regions', 'v6-...-blending-update: Bass Rainbow / Treble Regions', 'Ported',
       'Bass dots coloured individually by pitch; treble dots take the colour of their nearest greedy peak. '
       'Port of v6-colour-rainbow-improved-blending-update.',
       [Param('crossover', 'Crossover Hz', 'float', 1000.0, 100, 8000, log=True),
@@ -401,7 +404,7 @@ def m_split(ctx, p, pal, up):
     return ModeOut(pick(rgb, s, pal, up), gain=gain, visible=vis)
 
 
-@mode('peak_sparkle', 'Peak Sparkle (portfolio v1 / update-2)', 'Ported',
+@mode('peak_sparkle', 'v6-...-blending-update-2: Peak Sparkle (portfolio v1)', 'Ported',
       'Bass and treble handled separately; only greedy peaks (tiny min distance) are drawn, in continuous note '
       'hue, brightness relative to the band. Port of v6-...-update-2 (the first GitHub portfolio version).',
       [Param('crossover', 'Crossover Hz', 'float', 1000.0, 100, 8000, log=True),
@@ -434,7 +437,7 @@ def _zone_counts(ctx, zones):
     return out
 
 
-@mode('beat_zones', 'Beat Zones (v7)', 'Ported',
+@mode('beat_zones', 'v7-beat-detection: Beat Zones', 'Ported',
       'Circular detector zones (v7 beat detection): when more dots than the threshold fall inside a zone it '
       'triggers and flashes. Dots inside a flashing zone take its colour. Place zones from the inspector or '
       'by clicking the viewer while "Place zone" is armed.',

@@ -211,6 +211,7 @@ def run(out_dir=None, quick=False, gui=True):
     dB = np.abs(srgb_to_oklab(rgbM[vis]) - srgb_to_oklab(rgbB[vis])).mean()
     check('crossfade at u=0.5 sits between both modes', abs(u - 0.5) < 1e-6 and dA > 0.005 and dB > 0.005 and abs(dA - dB) < 0.5 * max(dA, dB),
           f'u={u:.2f} dist->A {dA:.3f} dist->B {dB:.3f}')
+    check('v6-colour-notes port matches the original loop', _v6_notes_matches(ctx), 'every visible dot')
     strip = np.concatenate([_render(eng, ren, 2.0 + 4.0 * uu) for uu in np.linspace(0, 1, 6)], axis=1)
     Image.fromarray(strip).save(os.path.join(out_dir, 'tween_strip.png'))
     kC, kD = Keyframe(0.0, 'radial'), Keyframe(4.0, 'radial')
@@ -448,6 +449,35 @@ def _click_test(out_dir, sf, A):
             name = {'centred': 'Centred, offset 0', 'live': 'Live-style',
                     'custom': f'Custom {off:+.0f} ms'}[mode]
             check(f'click alignment [{preset}] {name}', ok, '; '.join(res))
+
+
+def _v6_notes_matches(ctx):
+    """temp/v6-colour-notes/visualiser.py colour loop, transcribed literally, vs the note_regions mode."""
+    import colorsys
+    from .modes import MODES, Pal
+    from .palettes import Palette
+    vis = np.nonzero(ctx.visible)[0]
+    norm_amps = ctx.amp_rel[vis]
+    points = np.column_stack((ctx.pan[vis], np.log(ctx.freq[vis] / 20.0) / np.log(40000.0 / 20.0), norm_amps,
+                              ctx.freq[vis]))
+    sorted_points = points[np.argsort(points[:, 2], kind='stable')[::-1]]
+    peaks = []
+    for pt in sorted_points:
+        if pt[2] < 0.5 * np.max(norm_amps):
+            continue
+        if not peaks or np.all(np.linalg.norm(np.array(peaks)[:, :2] - pt[:2], axis=1) >= 0.15):
+            peaks.append(pt)
+    peaks = np.array(peaks)
+    midi = 69 + 12 * np.log2(peaks[:, 3] / 440.0)
+    base, frac = np.floor(midi).astype(int) % 12, midi - np.floor(midi)
+    pcol = np.array([[a * (1 - fr) + b * fr for a, b in zip(colorsys.hsv_to_rgb(bn / 12, 1, 1),
+                                                          colorsys.hsv_to_rgb(((bn + 1) % 12) / 12, 1, 1))]
+                     for bn, fr in zip(base, frac)])
+    ref = np.array([pcol[np.argmin(np.linalg.norm(peaks[:, :2] - pt[:2], axis=1))] for pt in points])
+    m = MODES['note_regions']
+    lut = Palette.preset(m.palette).lut()
+    got = m.fn(ctx, m.defaults(), Pal(lut, False), False).rgb[vis]
+    return len(peaks) > 0 and np.abs(got - ref).max() < 1e-3
 
 
 def _render(eng, ren, t):
