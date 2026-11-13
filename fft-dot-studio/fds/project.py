@@ -33,17 +33,21 @@ RENDER_DEFAULTS = {
     # extra dots placed on screen between existing dots
     'insert_mode': 'off', 'insert_count': 1, 'insert_neighbours': 3, 'insert_max_dist': 0.06,
     'insert_brightness': 1.0,
+    # layout: classic (x = pan) or scroll (left + right combined; each moment is printed as a column at the
+    # right edge and the "paper" scrolls left)
+    'layout': 'classic', 'scroll_seconds': 4.0, 'scroll_fade': 0.0,
 }
 INSERT_MODES = ['off', 'order', 'nearest', 'both']
 RENDER_CHOICES = {
     'freq_scale': ['log', 'mel', 'linear'], 'amp_scale': ['linear', 'db'],
     'normalise': ['frame', 'running', 'global'], 'dot_shape': ['square', 'round', 'glow'],
     'tonemap': ['clip', 'soft'], 'pan_mode': ['level', 'phase'], 'insert_mode': INSERT_MODES,
+    'layout': ['classic', 'scroll'],
 }
 # Per-keyframe render overrides. Numbers tween between keyframes; choices (insert_mode) switch at the keyframe.
 ANIMATABLE = ['brightness', 'gamma', 'dot_size', 'trail_ms', 'glow', 'glow_radius', 'saturation', 'threshold',
               'db_floor', 'background', 'pan_spread', 'insert_mode', 'insert_count', 'insert_neighbours',
-              'insert_max_dist', 'insert_brightness']
+              'insert_max_dist', 'insert_brightness', 'layout', 'scroll_fade']
 RENDER_PRESETS = {
     'Classic v5': dict(RENDER_DEFAULTS),
     'Punchy beats': dict(RENDER_DEFAULTS, amp_scale='db', db_floor=-48.0, normalise='running', running_release_s=1.5,
@@ -94,6 +98,11 @@ RENDER_TIPS = {
     'insert_neighbours': 'Nearest mode: how many nearest dots each dot connects to.',
     'insert_max_dist': 'Only gaps shorter than this are filled (fraction of the screen height).',
     'insert_brightness': 'Brightness of the inserted dots relative to the dots they sit between.',
+    'layout': 'classic = x is left/right pan (the original look).\n'
+              'scroll = left and right combined into one stream; each moment is printed as a column at the\n'
+              'right edge and the picture scrolls left like paper (a scrolling spectrogram).',
+    'scroll_seconds': 'Scroll mode: seconds of audio across the whole screen width (smaller = faster scrolling).',
+    'scroll_fade': 'Scroll mode: how much older dots fade towards the left edge (0 = no fade).',
 }
 
 ALIGN_MODES = ['centred', 'live', 'custom']

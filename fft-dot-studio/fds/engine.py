@@ -235,7 +235,7 @@ class Engine:
         self.manager = manager
         self.aspect = aspect
         self._ctx = LRU(1500)
-        self._dots = LRU(4000)
+        self._dots = LRU(7000)          # scroll layout keeps up to 6000 frames on screen
         self._smooth = LRU(3000)
         self._running = {}
         self._cumsum = {}
@@ -469,8 +469,16 @@ class Engine:
             sp = ta.spectrum
             hop_s = sp.hop / A.SR
             f_end = min(int(np.floor(lt / hop_s + 1e-9)), sp.n_frames - 1)
+            scroll = render.get('layout') == 'scroll'
             half = max(render['trail_ms'], 0.0) / 1000.0
-            if half <= 0:
+            if scroll:
+                # left + right in one stream: each frame is a column printed at the right edge that moves
+                # left as it ages, so the whole width shows the last scroll_seconds of audio
+                span = max(float(render.get('scroll_seconds', 4.0)), 0.05)
+                right = 1.0 - render['edge_margin']
+                K = min(int(np.ceil(span / hop_s)) + 1, 6000)
+                frames = list(range(max(0, f_end - K + 1), f_end + 1))
+            elif half <= 0:
                 frames = [f_end]
             else:
                 K = min(int(np.ceil(half * 6.65 / hop_s)) + 1, 800)
@@ -478,9 +486,15 @@ class Engine:
             xs, ys, ins, cols = [], [], [], []
             overlay = []
             for f in frames:
+                age = max(lt - f * hop_s, 0.0)
+                if scroll and right - 2.0 * age / span < -1.0:
+                    continue                                  # already scrolled off the left edge
                 x, y, inten, rgb, ov = self.frame_dots(ti, f, aspect)
-                age = lt - f * hop_s
-                w = 1.0 if half <= 0 else 0.5 ** (max(age, 0.0) / half)
+                if scroll:
+                    x = np.full(len(y), right - 2.0 * age / span, np.float32)
+                    w = max(0.0, 1.0 - float(render.get('scroll_fade', 0.0)) * age / span)
+                else:
+                    w = 1.0 if half <= 0 else 0.5 ** (age / half)
                 xs.append(x)
                 ys.append(y)
                 ins.append(inten * w)

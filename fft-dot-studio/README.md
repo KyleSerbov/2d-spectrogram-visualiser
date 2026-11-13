@@ -72,6 +72,13 @@ Between keyframes, the same mode **morphs** (parameters and palettes are interpo
 **crossfade** (each dot's colour is blended in OKLab). Easings: linear, smooth, ease in/out/in-out,
 exponential, hold.
 
+## Scroll layout
+
+Render > Layout > *scroll* combines left and right into one stream. Each moment is printed as a column
+at the right edge, and the picture scrolls left like paper, giving a live scrolling spectrogram.
+*Scroll seconds* sets how much time fits across the screen. *Scroll fade* dims older columns towards
+the left. The layout can be switched per keyframe, and it is the same in the preview and in exports.
+
 ## Insert between dots
 
 Render > *Insert between dots* adds extra dots on the straight line between existing dots. This line is
